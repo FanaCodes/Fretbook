@@ -1,0 +1,227 @@
+import SwiftUI
+import UniformTypeIdentifiers
+
+enum SidebarItem: Hashable {
+    case week
+    case student(UUID)
+}
+
+struct ContentView: View {
+    @EnvironmentObject private var store: Store
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var selection: SidebarItem? = .week
+    @State private var search = ""
+    @State private var newStudent: Student?
+    @State private var pendingDelete: Student?
+    @State private var confirmImport = false
+    @State private var importing = false
+    @State private var alertMessage: String?
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar
+        } detail: {
+            detail
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { store.save() }
+        }
+        .onAppear {
+            if let error = store.loadError { alertMessage = error }
+        }
+        .sheet(item: $newStudent) { student in
+            StudentEditor(student: student, isNew: true) { saved in
+                store.add(saved)
+                selection = .student(saved.id)
+            }
+        }
+        .confirmationDialog(
+            "Delete \(pendingDelete?.displayName ?? "student")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { student in
+            Button("Delete Student and All Lessons", role: .destructive) {
+                deleteStudent(student.id)
+            }
+        } message: { _ in
+            Text("This can't be undone.")
+        }
+        .confirmationDialog("Import a backup?", isPresented: $confirmImport, titleVisibility: .visible) {
+            Button("Choose Backup File…") { importing = true }
+        } message: {
+            Text("This replaces all students and lessons with the backup. A safety copy of your current data is kept in the Files app.")
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url):
+                do {
+                    try store.importBackup(from: url)
+                    selection = .week
+                } catch {
+                    alertMessage = "That file couldn't be imported. \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                alertMessage = error.localizedDescription
+            }
+        }
+        .alert(
+            "Fretbook",
+            isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage ?? "")
+        }
+    }
+
+    // MARK: Sidebar
+
+    private var filteredStudents: [Student] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        let all = store.sortedStudents
+        return query.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var sidebar: some View {
+        List(selection: $selection) {
+            NavigationLink(value: SidebarItem.week) {
+                Label("This Week", systemImage: "calendar")
+            }
+
+            Section("Students") {
+                ForEach(filteredStudents) { student in
+                    NavigationLink(value: SidebarItem.student(student.id)) {
+                        StudentRow(student: student)
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            pendingDelete = student
+                        } label: {
+                            Label("Delete Student", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Fretbook")
+        .searchable(text: $search, prompt: "Search students")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Menu {
+                    ShareLink(item: store.fileURL) {
+                        Label("Export Backup", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        confirmImport = true
+                    } label: {
+                        Label("Import Backup…", systemImage: "square.and.arrow.down")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    newStudent = Student(colorIndex: store.students.count)
+                } label: {
+                    Label("Add Student", systemImage: "person.badge.plus")
+                }
+            }
+        }
+    }
+
+    // MARK: Detail
+
+    @ViewBuilder
+    private var detail: some View {
+        switch selection {
+        case .student(let id)?:
+            if let binding = store.binding(for: id) {
+                StudentPage(student: binding, onDelete: { deleteStudent(id) })
+                    .id(id)
+            } else {
+                ContentUnavailableView("Pick a student", systemImage: "person.crop.circle")
+            }
+        default:
+            WeekView(selection: $selection, onAddStudent: {
+                newStudent = Student(colorIndex: store.students.count)
+            })
+        }
+    }
+
+    private func deleteStudent(_ id: UUID) {
+        if selection == .student(id) { selection = .week }
+        store.delete(id)
+    }
+}
+
+// MARK: - Shared small views
+
+struct StudentRow: View {
+    let student: Student
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Avatar(student: student, size: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(student.displayName)
+                    .font(.body.weight(.medium))
+                if let slot = student.shortSlot {
+                    Text(slot)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+struct Avatar: View {
+    let student: Student
+    var size: CGFloat = 40
+
+    var body: some View {
+        Circle()
+            .fill(student.color.gradient)
+            .frame(width: size, height: size)
+            .overlay(
+                Text(student.initials)
+                    .font(.system(size: size * 0.4, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            )
+    }
+}
+
+struct Chip: View {
+    let text: String
+    var systemImage: String? = nil
+    var color: Color = .secondary
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let systemImage {
+                Image(systemName: systemImage)
+            }
+            Text(text)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .foregroundStyle(color)
+        .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+extension View {
+    func card() -> some View {
+        padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color(uiColor: .secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+    }
+}
