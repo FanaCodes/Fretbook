@@ -157,6 +157,7 @@ struct Student: Identifiable, Codable, Hashable {
     var duration = 30
     var colorIndex = 0
     var lessons: [Lesson] = []
+    var repertoire: [RepertoireSong] = []
 
     init(name: String = "", colorIndex: Int = 0) {
         self.name = name
@@ -164,7 +165,7 @@ struct Student: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, level, goals, contact, weekday, startMinutes, duration, colorIndex, lessons
+        case id, name, level, goals, contact, weekday, startMinutes, duration, colorIndex, lessons, repertoire
     }
 
     init(from decoder: Decoder) throws {
@@ -179,6 +180,7 @@ struct Student: Identifiable, Codable, Hashable {
         duration = try c.decodeIfPresent(Int.self, forKey: .duration) ?? 30
         colorIndex = try c.decodeIfPresent(Int.self, forKey: .colorIndex) ?? 0
         lessons = try c.decodeIfPresent([Lesson].self, forKey: .lessons) ?? []
+        repertoire = try c.decodeIfPresent([RepertoireSong].self, forKey: .repertoire) ?? []
     }
 
     var displayName: String { name.isEmpty ? "Unnamed" : name }
@@ -275,5 +277,218 @@ struct Library: Codable {
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
         students = try c.decode([Student].self, forKey: .students)
         charts = try c.decodeIfPresent([ChordChart].self, forKey: .charts) ?? []
+    }
+}
+
+// MARK: - Repertoire
+
+enum SongStatus: String, Codable, CaseIterable, Identifiable {
+    case wishlist, learning, canPlay, ready
+
+    var id: String { rawValue }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = SongStatus(rawValue: raw) ?? .learning
+    }
+
+    var label: String {
+        switch self {
+        case .wishlist: return "Wishlist"
+        case .learning: return "Learning"
+        case .canPlay: return "Can play"
+        case .ready: return "Performance-ready"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .wishlist: return "star"
+        case .learning: return "hammer.fill"
+        case .canPlay: return "checkmark.circle.fill"
+        case .ready: return "star.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .wishlist: return .gray
+        case .learning: return .orange
+        case .canPlay: return .blue
+        case .ready: return .green
+        }
+    }
+
+    /// Order used on screen: what they're working on first.
+    static let displayOrder: [SongStatus] = [.learning, .canPlay, .ready, .wishlist]
+}
+
+struct SongStatusChange: Codable, Hashable {
+    var status: SongStatus
+    var date: Date
+}
+
+struct RepertoireSong: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var title = ""
+    var artist = ""
+    var status: SongStatus = .learning
+    var notes = ""
+    var added = Date()
+    var history: [SongStatusChange] = []
+
+    init(title: String = "", artist: String = "", status: SongStatus = .learning) {
+        self.title = title
+        self.artist = artist
+        self.status = status
+        self.history = [SongStatusChange(status: status, date: Date())]
+    }
+
+    mutating func setStatus(_ newStatus: SongStatus, on date: Date = Date()) {
+        guard newStatus != status else { return }
+        status = newStatus
+        history.append(SongStatusChange(status: newStatus, date: date))
+    }
+
+    /// When the song reached its current status.
+    var statusDate: Date { history.last(where: { $0.status == status })?.date ?? added }
+
+    enum CodingKeys: String, CodingKey { case id, title, artist, status, notes, added, history }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        artist = try c.decodeIfPresent(String.self, forKey: .artist) ?? ""
+        status = try c.decodeIfPresent(SongStatus.self, forKey: .status) ?? .learning
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        added = try c.decodeIfPresent(Date.self, forKey: .added) ?? Date()
+        history = try c.decodeIfPresent([SongStatusChange].self, forKey: .history) ?? []
+    }
+}
+
+// MARK: - Progress
+
+struct LearnedChord: Identifiable {
+    let name: String
+    let frets: String
+    let date: Date
+    var id: String { name + frets }
+}
+
+struct TempoPoint: Identifiable {
+    let date: Date
+    let bpm: Int
+    var id: Date { date }
+}
+
+struct TempoSeries: Identifiable {
+    let title: String
+    let category: NoteCategory
+    let points: [TempoPoint]
+    var id: String { title.lowercased() }
+    var first: Int { points.first?.bpm ?? 0 }
+    var latest: Int { points.last?.bpm ?? 0 }
+    var gain: Int { latest - first }
+}
+
+struct ProgressEvent: Identifiable {
+    let id = UUID()
+    let date: Date
+    let symbol: String
+    let color: Color
+    let text: String
+}
+
+extension Student {
+    var sortedLessonsAscending: [Lesson] { lessons.sorted { $0.date < $1.date } }
+
+    /// Every chord from lesson notes, first time it appeared, oldest first.
+    var learnedChords: [LearnedChord] {
+        var seen = Set<String>()
+        var result: [LearnedChord] = []
+        for lesson in sortedLessonsAscending {
+            for item in lesson.items where item.category == .chord {
+                let name = item.title.trimmingCharacters(in: .whitespaces)
+                let key = name.isEmpty ? item.frets : name.lowercased()
+                guard !key.isEmpty, seen.insert(key).inserted else { continue }
+                result.append(LearnedChord(name: name.isEmpty ? item.frets : name, frets: item.frets, date: lesson.date))
+            }
+        }
+        return result
+    }
+
+    /// Exercises/songs whose tempo was noted, grouped by title, oldest point first.
+    var tempoSeries: [TempoSeries] {
+        var groups: [String: (title: String, category: NoteCategory, points: [TempoPoint])] = [:]
+        for lesson in sortedLessonsAscending {
+            for item in lesson.items {
+                guard let bpm = item.bpm else { continue }
+                let title = item.title.trimmingCharacters(in: .whitespaces)
+                guard !title.isEmpty else { continue }
+                let key = title.lowercased()
+                var entry = groups[key] ?? (title, item.category, [])
+                entry.points.append(TempoPoint(date: lesson.date, bpm: bpm))
+                groups[key] = entry
+            }
+        }
+        return groups.values
+            .map { TempoSeries(title: $0.title, category: $0.category, points: $0.points) }
+            .sorted { a, b in
+                // Exercises with an actual trend first, then most recently practised.
+                let aTrend = a.points.count > 1
+                let bTrend = b.points.count > 1
+                if aTrend != bTrend { return aTrend }
+                return (a.points.last?.date ?? .distantPast) > (b.points.last?.date ?? .distantPast)
+            }
+    }
+
+    /// Song titles from lesson notes that aren't in the repertoire yet.
+    var songSuggestions: [String] {
+        let known = Set(repertoire.map { $0.title.lowercased() })
+        var seen = Set<String>()
+        var result: [String] = []
+        for lesson in lessons.sorted(by: { $0.date > $1.date }) {
+            for item in lesson.items where item.category == .song {
+                let title = item.title.trimmingCharacters(in: .whitespaces)
+                let key = title.lowercased()
+                guard !title.isEmpty, !known.contains(key), seen.insert(key).inserted else { continue }
+                result.append(title)
+            }
+        }
+        return result
+    }
+
+    /// Milestones for the timeline, newest first.
+    var progressEvents: [ProgressEvent] {
+        var events: [ProgressEvent] = []
+        let lessonsAscending = sortedLessonsAscending
+        if let first = lessonsAscending.first {
+            events.append(ProgressEvent(date: first.date, symbol: "flag.fill", color: .accentColor, text: "First lesson"))
+        }
+        for (index, lesson) in lessonsAscending.enumerated() where (index + 1) % 10 == 0 {
+            events.append(ProgressEvent(date: lesson.date, symbol: "\(min(index + 1, 50)).circle.fill", color: .accentColor, text: "\(index + 1) lessons"))
+        }
+        for chord in learnedChords {
+            events.append(ProgressEvent(date: chord.date, symbol: NoteCategory.chord.symbol, color: NoteCategory.chord.color, text: "Learned \(chord.name)"))
+        }
+        for song in repertoire {
+            for change in song.history where change.status != .wishlist {
+                let verb: String
+                switch change.status {
+                case .learning: verb = "Started learning"
+                case .canPlay: verb = "Can play"
+                case .ready: verb = "Performance-ready:"
+                case .wishlist: verb = ""
+                }
+                events.append(ProgressEvent(date: change.date, symbol: change.status.symbol, color: change.status.color, text: "\(verb) \(song.title)"))
+            }
+        }
+        for series in tempoSeries where series.points.count > 1 && series.gain > 0 {
+            if let last = series.points.last {
+                events.append(ProgressEvent(date: last.date, symbol: "metronome.fill", color: .purple, text: "\(series.title): \(series.first) → \(series.latest) BPM"))
+            }
+        }
+        return events.sorted { $0.date > $1.date }
     }
 }

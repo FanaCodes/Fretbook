@@ -111,6 +111,11 @@ final class Store: ObservableObject {
         return chart.id
     }
 
+    func addChart(_ chart: ChordChart) -> UUID {
+        charts.append(chart)
+        return chart.id
+    }
+
     func deleteChart(_ id: UUID) {
         charts.removeAll { $0.id == id }
     }

@@ -3,6 +3,8 @@ import SwiftUI
 struct LessonCard: View {
     @Binding var lesson: Lesson
     var onDelete: () -> Void
+    var onHandout: () -> Void = {}
+    var onMakeChart: () -> Void = {}
 
     @State private var editing: EditTarget?
     @State private var confirmDelete = false
@@ -17,6 +19,14 @@ struct LessonCard: View {
                     .labelsHidden()
                 Spacer()
                 Menu {
+                    Button(action: onHandout) {
+                        Label("Lesson Handout (PDF)", systemImage: "doc.richtext")
+                    }
+                    Button(action: onMakeChart) {
+                        Label("Chord Chart from This Lesson", systemImage: "square.grid.3x3")
+                    }
+                    .disabled(chords.isEmpty)
+                    Divider()
                     Button(role: .destructive) {
                         confirmDelete = true
                     } label: {

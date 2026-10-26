@@ -180,7 +180,7 @@ struct ContentView: View {
             }
         case .student(let id)?:
             if let binding = store.binding(for: id) {
-                StudentPage(student: binding, onDelete: { deleteStudent(id) })
+                StudentPage(student: binding, onDelete: { deleteStudent(id) }, onOpenChart: { selection = .chart($0) })
                     .id(id)
             } else {
                 ContentUnavailableView("Pick a student", systemImage: "person.crop.circle")

@@ -8,6 +8,9 @@ struct DiagramEditor: View {
     @State private var selection: UUID?
     @State private var tuningText: String
     @State private var confirmClear = false
+    @State private var scaleRoot = 9
+    @State private var scaleName = "Minor Pentatonic"
+    @State private var scaleLabels: ScaleLabels = .intervals
 
     let isNew: Bool
     let leftHanded: Bool
@@ -108,9 +111,11 @@ struct DiagramEditor: View {
             }
             .aspectRatio(FretDiagramView.aspectRatio(for: draft), contentMode: .fit)
             .padding(.horizontal, 24)
-            .frame(maxWidth: 520, maxHeight: .infinity)
+            .frame(maxWidth: draft.kind == .neck ? 1000 : 520, maxHeight: .infinity)
 
-            Text("Tap a fret to add a dot · tap a dot to select it, tap again to remove · tap above the nut for open ○ / muted ✕ · drag across strings for a barre")
+            Text(draft.kind == .neck
+                 ? "Tap a fret to add a dot · tap a dot to select it, tap again to remove · tap left of the nut for open strings · drag across strings for a barre"
+                 : "Tap a fret to add a dot · tap a dot to select it, tap again to remove · tap above the nut for open ○ / muted ✕ · drag across strings for a barre")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -120,6 +125,10 @@ struct DiagramEditor: View {
     }
 
     private func handle(start: CGPoint, end: CGPoint, size: CGSize) {
+        if draft.kind == .neck {
+            handleNeck(start: start, end: end, size: size)
+            return
+        }
         let geometry = DiagramGeometry(
             size: size,
             strings: draft.stringCount,
@@ -137,8 +146,33 @@ struct DiagramEditor: View {
             case let (.cell(string, row), _):
                 tap(string: string, fret: draft.startFret + row)
             case let (.marker(string), _):
-                cycleMark(string)
+                if draft.dots.contains(where: { $0.string == string && $0.fret == 0 }) {
+                    tap(string: string, fret: 0)
+                } else {
+                    cycleMark(string)
+                }
             default:
+                selection = nil
+            }
+        }
+    }
+
+    private func handleNeck(start: CGPoint, end: CGPoint, size: CGSize) {
+        let geometry = NeckGeometry(
+            size: size,
+            strings: draft.stringCount,
+            startFret: draft.startFret,
+            frets: draft.fretCount,
+            leftHanded: leftHanded,
+            showTuning: true
+        )
+        withAnimation(.snappy(duration: 0.15)) {
+            if let first = geometry.hit(start), let last = geometry.hit(end),
+               first.fret == last.fret, first.string != last.string, first.fret > 0 {
+                addBarre(fret: first.fret, from: first.string, to: last.string)
+            } else if let first = geometry.hit(start) {
+                tap(string: first.string, fret: first.fret)
+            } else {
                 selection = nil
             }
         }
@@ -208,6 +242,7 @@ struct DiagramEditor: View {
 
             chordSection
             fretboardSection
+            scaleSection
             librarySection
         }
     }
@@ -306,6 +341,16 @@ struct DiagramEditor: View {
 
     private var fretboardSection: some View {
         Section {
+            Picker("View", selection: Binding(
+                get: { draft.kind },
+                set: { setKind($0) }
+            )) {
+                ForEach(DiagramKind.allCases) { kind in
+                    Text(kind.label).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+
             Menu {
                 ForEach(Tunings.presets) { preset in
                     Button("\(preset.name) – \(preset.notes.joined(separator: " "))") {
@@ -328,7 +373,7 @@ struct DiagramEditor: View {
                 }
 
             Stepper("Start at fret \(draft.startFret)", value: $draft.startFret, in: 1...24)
-            Stepper("\(draft.fretCount) frets shown", value: $draft.fretCount, in: 3...12)
+            Stepper("\(draft.fretCount) frets shown", value: $draft.fretCount, in: 3...(draft.kind == .neck ? 24 : 12))
             Toggle("Use flats (♭) for note names", isOn: $draft.preferFlats)
             Button("Fit to dots") {
                 withAnimation { draft.fitWindow() }
@@ -366,6 +411,68 @@ struct DiagramEditor: View {
             .disabled(draft.isEmpty)
         } footer: {
             Text("Common shapes use standard tuning and include finger numbers.")
+        }
+    }
+
+    private func setKind(_ kind: DiagramKind) {
+        withAnimation {
+            draft.kind = kind
+            if kind == .neck && draft.fretCount < 12 {
+                draft.fretCount = 12
+            } else if kind == .box && draft.fretCount > 7 {
+                draft.fretCount = 5
+                draft.fitWindow()
+            }
+        }
+    }
+
+    private var scaleSection: some View {
+        Section {
+            Picker("Key", selection: $scaleRoot) {
+                ForEach(0..<12, id: \.self) { pc in
+                    Text(NoteMath.name(pc, flats: [1, 3, 8, 10].contains(pc))).tag(pc)
+                }
+            }
+            Picker("Scale", selection: $scaleName) {
+                ForEach(Scales.groups, id: \.self) { group in
+                    Section(group) {
+                        ForEach(Scales.all.filter { $0.group == group }) { scale in
+                            Text(scale.name).tag(scale.name)
+                        }
+                    }
+                }
+            }
+            Picker("Labels", selection: $scaleLabels) {
+                ForEach(ScaleLabels.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Button {
+                guard let scale = Scales.all.first(where: { $0.name == scaleName }) else { return }
+                withAnimation {
+                    draft.fill(scale: scale, root: scaleRoot, labels: scaleLabels)
+                    selection = nil
+                }
+            } label: {
+                Label("Fill frets \(draft.visibleFrets.lowerBound)–\(draft.visibleFrets.upperBound) with this scale", systemImage: "wand.and.stars")
+            }
+
+            Button {
+                withAnimation {
+                    draft.kind = .neck
+                    draft.startFret = 1
+                    draft.fretCount = 12
+                }
+            } label: {
+                Label("Show whole neck (frets 0–12)", systemImage: "arrow.left.and.right")
+            }
+            .disabled(draft.kind == .neck && draft.startFret == 1 && draft.fretCount == 12)
+        } header: {
+            Text("Scale / arpeggio")
+        } footer: {
+            Text("Fills the visible frets – set the start fret and number of frets first (e.g. start at 5 with 4 frets for a box shape). Roots are drawn as squares.")
         }
     }
 

@@ -235,6 +235,11 @@ struct ChartPage: View {
                 Label("Blank Diagram", systemImage: "square.dashed")
             }
             Button {
+                addScale()
+            } label: {
+                Label("Scale on Fretboard", systemImage: "pianokeys")
+            }
+            Button {
                 addOpenChords()
             } label: {
                 Label("All Open Chords (C A G E D Am Em Dm)", systemImage: "square.grid.3x3.fill")
@@ -260,10 +265,12 @@ struct ChartPage: View {
                 .foregroundStyle(.secondary)
             Text("No diagrams yet")
                 .font(.title3.bold())
-            Text("Draw your own or start with the common open chords.")
+            Text("Draw your own, generate a scale on the fretboard, or start with the common open chords.")
                 .foregroundStyle(.secondary)
             HStack {
                 Button("Blank Diagram") { addBlank() }
+                    .buttonStyle(.bordered)
+                Button("Scale on Fretboard") { addScale() }
                     .buttonStyle(.bordered)
                 Button("Add Open Chords") { addOpenChords() }
                     .buttonStyle(.borderedProminent)
@@ -282,6 +289,17 @@ struct ChartPage: View {
         if let last = chart.diagrams.last {
             diagram.setTuning(last.tuning)
             diagram.preferFlats = last.preferFlats
+        }
+        editing = DiagramTarget(diagram: diagram, isNew: true)
+    }
+
+    private func addScale() {
+        var diagram = FretDiagram()
+        if let last = chart.diagrams.last { diagram.setTuning(last.tuning) }
+        diagram.kind = .neck
+        diagram.fretCount = 12
+        if let pentatonic = Scales.all.first(where: { $0.name == "Minor Pentatonic" }) {
+            diagram.fill(scale: pentatonic, root: 9, labels: .intervals)
         }
         editing = DiagramTarget(diagram: diagram, isNew: true)
     }

@@ -121,10 +121,23 @@ enum DotStyle: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum DiagramKind: String, Codable, CaseIterable, Identifiable {
+    case box, neck
+
+    var id: String { rawValue }
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = DiagramKind(rawValue: raw) ?? .box
+    }
+
+    var label: String { self == .box ? "Chord box" : "Fretboard" }
+}
+
 struct Dot: Identifiable, Codable, Hashable {
     var id = UUID()
     var string: Int         // 0 = lowest string
-    var fret: Int           // absolute fret number (1…24)
+    var fret: Int           // absolute fret number (0 = open string, 1…24)
     var label = ""
     var style: DotStyle = .normal
 
@@ -187,6 +200,7 @@ struct FretDiagram: Identifiable, Codable, Hashable {
     var dots: [Dot] = []
     var barres: [Barre] = []
     var preferFlats = false
+    var kind: DiagramKind = .box
 
     init(name: String = "") {
         self.name = name
@@ -238,7 +252,7 @@ struct FretDiagram: Identifiable, Codable, Hashable {
 
     /// Moves the visible window so every dot and barre is on screen.
     mutating func fitWindow() {
-        let frets = dots.map(\.fret) + barres.map(\.fret)
+        let frets = (dots.map(\.fret) + barres.map(\.fret)).filter { $0 > 0 }
         guard let low = frets.min(), let high = frets.max() else { return }
         if high <= fretCount {
             startFret = 1
@@ -249,7 +263,7 @@ struct FretDiagram: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, caption, tuning, startFret, fretCount, marks, dots, barres, preferFlats
+        case id, name, caption, tuning, startFret, fretCount, marks, dots, barres, preferFlats, kind
     }
 
     init(from decoder: Decoder) throws {
@@ -260,11 +274,12 @@ struct FretDiagram: Identifiable, Codable, Hashable {
         tuning = try c.decodeIfPresent([String].self, forKey: .tuning) ?? Tunings.standard
         if tuning.isEmpty { tuning = Tunings.standard }
         startFret = try max(1, c.decodeIfPresent(Int.self, forKey: .startFret) ?? 1)
-        fretCount = try min(12, max(2, c.decodeIfPresent(Int.self, forKey: .fretCount) ?? 5))
+        fretCount = try min(24, max(2, c.decodeIfPresent(Int.self, forKey: .fretCount) ?? 5))
         marks = try c.decodeIfPresent([StringMark].self, forKey: .marks) ?? []
         dots = try c.decodeIfPresent([Dot].self, forKey: .dots) ?? []
         barres = try c.decodeIfPresent([Barre].self, forKey: .barres) ?? []
         preferFlats = try c.decodeIfPresent(Bool.self, forKey: .preferFlats) ?? false
+        kind = try c.decodeIfPresent(DiagramKind.self, forKey: .kind) ?? .box
         while marks.count < tuning.count { marks.append(.none) }
     }
 }
@@ -308,6 +323,10 @@ struct ChartLayout: Identifiable, Hashable {
     static let presets: [ChartLayout] = [
         ChartLayout(columns: 1, rows: 1),
         ChartLayout(columns: 1, rows: 2),
+        ChartLayout(columns: 1, rows: 3),
+        ChartLayout(columns: 1, rows: 4),
+        ChartLayout(columns: 1, rows: 5),
+        ChartLayout(columns: 2, rows: 4),
         ChartLayout(columns: 2, rows: 2),
         ChartLayout(columns: 2, rows: 3),
         ChartLayout(columns: 3, rows: 3),
@@ -507,4 +526,105 @@ struct ShapePreset: Identifiable {
     ]
 
     static let openChords = ["C", "A", "G", "E", "D", "Am", "Em", "Dm"]
+}
+
+// MARK: - Scales & arpeggios
+
+struct ScaleType: Identifiable {
+    let name: String
+    let group: String
+    let steps: [(semitones: Int, label: String)]
+    var id: String { name }
+
+    var isMinor: Bool { steps.contains { $0.semitones == 3 } && !steps.contains { $0.semitones == 4 } }
+}
+
+enum Scales {
+    static let all: [ScaleType] = [
+        ScaleType(name: "Major", group: "Scales", steps: [(0, "R"), (2, "2"), (4, "3"), (5, "4"), (7, "5"), (9, "6"), (11, "7")]),
+        ScaleType(name: "Natural Minor", group: "Scales", steps: [(0, "R"), (2, "2"), (3, "♭3"), (5, "4"), (7, "5"), (8, "♭6"), (10, "♭7")]),
+        ScaleType(name: "Major Pentatonic", group: "Scales", steps: [(0, "R"), (2, "2"), (4, "3"), (7, "5"), (9, "6")]),
+        ScaleType(name: "Minor Pentatonic", group: "Scales", steps: [(0, "R"), (3, "♭3"), (5, "4"), (7, "5"), (10, "♭7")]),
+        ScaleType(name: "Blues", group: "Scales", steps: [(0, "R"), (3, "♭3"), (5, "4"), (6, "♭5"), (7, "5"), (10, "♭7")]),
+        ScaleType(name: "Major Blues", group: "Scales", steps: [(0, "R"), (2, "2"), (3, "♭3"), (4, "3"), (7, "5"), (9, "6")]),
+        ScaleType(name: "Harmonic Minor", group: "Scales", steps: [(0, "R"), (2, "2"), (3, "♭3"), (5, "4"), (7, "5"), (8, "♭6"), (11, "7")]),
+        ScaleType(name: "Melodic Minor", group: "Scales", steps: [(0, "R"), (2, "2"), (3, "♭3"), (5, "4"), (7, "5"), (9, "6"), (11, "7")]),
+        ScaleType(name: "Dorian", group: "Modes", steps: [(0, "R"), (2, "2"), (3, "♭3"), (5, "4"), (7, "5"), (9, "6"), (10, "♭7")]),
+        ScaleType(name: "Phrygian", group: "Modes", steps: [(0, "R"), (1, "♭2"), (3, "♭3"), (5, "4"), (7, "5"), (8, "♭6"), (10, "♭7")]),
+        ScaleType(name: "Lydian", group: "Modes", steps: [(0, "R"), (2, "2"), (4, "3"), (6, "♯4"), (7, "5"), (9, "6"), (11, "7")]),
+        ScaleType(name: "Mixolydian", group: "Modes", steps: [(0, "R"), (2, "2"), (4, "3"), (5, "4"), (7, "5"), (9, "6"), (10, "♭7")]),
+        ScaleType(name: "Locrian", group: "Modes", steps: [(0, "R"), (1, "♭2"), (3, "♭3"), (5, "4"), (6, "♭5"), (8, "♭6"), (10, "♭7")]),
+        ScaleType(name: "Major Arpeggio", group: "Arpeggios", steps: [(0, "R"), (4, "3"), (7, "5")]),
+        ScaleType(name: "Minor Arpeggio", group: "Arpeggios", steps: [(0, "R"), (3, "♭3"), (7, "5")]),
+        ScaleType(name: "Dominant 7 Arpeggio", group: "Arpeggios", steps: [(0, "R"), (4, "3"), (7, "5"), (10, "♭7")]),
+        ScaleType(name: "Major 7 Arpeggio", group: "Arpeggios", steps: [(0, "R"), (4, "3"), (7, "5"), (11, "7")]),
+        ScaleType(name: "Minor 7 Arpeggio", group: "Arpeggios", steps: [(0, "R"), (3, "♭3"), (7, "5"), (10, "♭7")]),
+        ScaleType(name: "m7♭5 Arpeggio", group: "Arpeggios", steps: [(0, "R"), (3, "♭3"), (6, "♭5"), (10, "♭7")]),
+        ScaleType(name: "Diminished 7 Arpeggio", group: "Arpeggios", steps: [(0, "R"), (3, "♭3"), (6, "♭5"), (9, "♭♭7")]),
+    ]
+
+    static let groups = ["Scales", "Modes", "Arpeggios"]
+}
+
+enum ScaleLabels: String, CaseIterable, Identifiable {
+    case intervals, notes, none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .intervals: return "Intervals"
+        case .notes: return "Notes"
+        case .none: return "Dots only"
+        }
+    }
+}
+
+extension FretDiagram {
+    /// Lowest and highest fret currently visible (fret 0 included when the nut is shown).
+    var visibleFrets: ClosedRange<Int> {
+        (startFret == 1 ? 0 : startFret)...(startFret + fretCount - 1)
+    }
+
+    /// Replaces the diagram's dots with every note of a scale/arpeggio in the visible window.
+    mutating func fill(scale: ScaleType, root: Int, labels: ScaleLabels) {
+        let relativeMajor = scale.isMinor ? (root + 3) % 12 : root
+        preferFlats = [1, 3, 5, 8, 10].contains(relativeMajor)
+
+        var steps: [Int: String] = [:]
+        for step in scale.steps { steps[step.semitones] = step.label }
+
+        dots = []
+        barres = []
+        marks = Array(repeating: .none, count: stringCount)
+        for string in 0..<stringCount {
+            guard let open = NoteMath.pitchClass(tuning[string]) else { continue }
+            for fret in visibleFrets {
+                let interval = ((open + fret - root) % 12 + 12) % 12
+                guard let label = steps[interval] else { continue }
+                let text: String
+                switch labels {
+                case .intervals: text = label
+                case .notes: text = NoteMath.name(open + fret, flats: preferFlats)
+                case .none: text = ""
+                }
+                dots.append(Dot(string: string, fret: fret, label: text, style: interval == 0 ? .root : .normal))
+            }
+        }
+        name = "\(NoteMath.name(root, flats: preferFlats)) \(scale.name)"
+    }
+
+    /// Converts a lesson chord note ("Am", "x02210") into a chart diagram,
+    /// using the library shape (with fingerings) when it's the same shape.
+    static func fromChordNote(name: String, frets: String) -> FretDiagram? {
+        guard let shape = ChordShape(frets) else { return nil }
+        var diagram: FretDiagram
+        if let preset = ShapePreset.common.first(where: { ChordShape($0.frets) == shape }) {
+            diagram = preset.diagram
+        } else {
+            diagram = ShapePreset(name: name, frets: frets, fingers: "").diagram
+        }
+        if !name.isEmpty { diagram.name = name }
+        return diagram
+    }
 }

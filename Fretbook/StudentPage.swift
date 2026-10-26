@@ -1,13 +1,31 @@
 import SwiftUI
 
 /// One student's page: info, open homework, and every lesson with its notes.
+enum StudentTab: String, CaseIterable, Identifiable {
+    case lessons, repertoire, progress
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .lessons: return "Lessons"
+        case .repertoire: return "Repertoire"
+        case .progress: return "Progress"
+        }
+    }
+}
+
 struct StudentPage: View {
+    @EnvironmentObject private var store: Store
     @Binding var student: Student
     var onDelete: () -> Void
+    var onOpenChart: (UUID) -> Void = { _ in }
 
     @State private var editingInfo = false
     @State private var filter: NoteCategory?
     @State private var editing: EditTarget?
+    @State private var tab: StudentTab = .lessons
+    @State private var preview: PDFFile?
 
     private var sortedLessons: [Lesson] {
         student.lessons.sorted { $0.date > $1.date }
@@ -18,18 +36,32 @@ struct StudentPage: View {
             VStack(alignment: .leading, spacing: 24) {
                 header
 
-                if !student.openHomework.isEmpty {
-                    homework
+                Picker("Section", selection: $tab) {
+                    ForEach(StudentTab.allCases) { tab in
+                        Text(tab.label).tag(tab)
+                    }
                 }
+                .pickerStyle(.segmented)
 
-                if !student.allItems.isEmpty {
-                    filterBar
-                }
+                switch tab {
+                case .lessons:
+                    if !student.openHomework.isEmpty {
+                        homework
+                    }
 
-                if let filter {
-                    filtered(by: filter)
-                } else {
-                    lessons
+                    if !student.allItems.isEmpty {
+                        filterBar
+                    }
+
+                    if let filter {
+                        filtered(by: filter)
+                    } else {
+                        lessons
+                    }
+                case .repertoire:
+                    RepertoireView(student: $student)
+                case .progress:
+                    StudentProgressView(student: student)
                 }
             }
             .padding(24)
@@ -47,6 +79,23 @@ struct StudentPage: View {
                     Label("New Lesson", systemImage: "plus")
                 }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        makeChart(LessonCharts.forStudent(student))
+                    } label: {
+                        Label("Chord Chart of All Chords", systemImage: "square.grid.3x3")
+                    }
+                    .disabled(student.learnedChords.isEmpty)
+                    Button {
+                        preview = ProgressReport.make(student: student).map(PDFFile.init)
+                    } label: {
+                        Label("Progress Report (PDF)", systemImage: "chart.line.uptrend.xyaxis")
+                    }
+                } label: {
+                    Label("Handouts", systemImage: "doc.richtext")
+                }
+            }
             ToolbarItem(placement: .secondaryAction) {
                 Button {
                     editingInfo = true
@@ -54,6 +103,9 @@ struct StudentPage: View {
                     Label("Edit Student", systemImage: "pencil")
                 }
             }
+        }
+        .sheet(item: $preview) { file in
+            PDFPreviewSheet(file: file)
         }
         .sheet(isPresented: $editingInfo) {
             StudentEditor(student: student, isNew: false, onSave: { student = $0 }, onDelete: onDelete)
@@ -210,11 +262,20 @@ struct StudentPage: View {
             }
 
             ForEach(sortedLessons) { lesson in
-                LessonCard(lesson: lessonBinding(lesson.id)) {
-                    withAnimation {
-                        student.lessons.removeAll { $0.id == lesson.id }
+                LessonCard(
+                    lesson: lessonBinding(lesson.id),
+                    onDelete: {
+                        withAnimation {
+                            student.lessons.removeAll { $0.id == lesson.id }
+                        }
+                    },
+                    onHandout: {
+                        preview = LessonHandout.make(student: student, lesson: lesson).map(PDFFile.init)
+                    },
+                    onMakeChart: {
+                        makeChart(LessonCharts.forLesson(lesson, student: student))
                     }
-                }
+                )
             }
         }
     }
@@ -258,9 +319,15 @@ struct StudentPage: View {
 
     // MARK: Actions
 
+    private func makeChart(_ chart: ChordChart?) {
+        guard let chart else { return }
+        onOpenChart(store.addChart(chart))
+    }
+
     private func addLesson() {
         withAnimation {
             filter = nil
+            tab = .lessons
             student.lessons.append(Lesson(date: Date()))
         }
     }
