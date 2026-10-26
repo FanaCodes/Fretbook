@@ -7,6 +7,10 @@ final class Store: ObservableObject {
         didSet { scheduleSave() }
     }
 
+    @Published var charts: [ChordChart] = [] {
+        didSet { scheduleSave() }
+    }
+
     /// Set when the data file exists but couldn't be read.
     @Published var loadError: String?
 
@@ -29,8 +33,9 @@ final class Store: ObservableObject {
 
     private func load() {
         do {
-            let data = try Data(contentsOf: fileURL)
-            students = try Self.decode(data)
+            let library = try Self.decode(Data(contentsOf: fileURL))
+            students = library.students
+            charts = library.charts
         } catch {
             // Never overwrite a file we couldn't read: keep a copy aside first.
             let copy = fileURL.deletingLastPathComponent()
@@ -54,20 +59,20 @@ final class Store: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(Library(students: students))
+            let data = try encoder.encode(Library(students: students, charts: charts))
             try data.write(to: fileURL, options: .atomic)
         } catch {
             print("Save failed: \(error)")
         }
     }
 
-    private static func decode(_ data: Data) throws -> [Student] {
+    private static func decode(_ data: Data) throws -> Library {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let library = try? decoder.decode(Library.self, from: data) {
-            return library.students
+            return library
         }
-        return try decoder.decode([Student].self, from: data)
+        return Library(students: try decoder.decode([Student].self, from: data), charts: [])
     }
 
     /// Replaces all data with a backup file. The current data is copied aside first.
@@ -79,7 +84,8 @@ final class Store: ObservableObject {
         let safety = fileURL.deletingLastPathComponent()
             .appendingPathComponent("Fretbook-before-import-\(Int(Date().timeIntervalSince1970)).json")
         try? FileManager.default.copyItem(at: fileURL, to: safety)
-        students = imported
+        students = imported.students
+        charts = imported.charts
         save()
     }
 
@@ -95,6 +101,30 @@ final class Store: ObservableObject {
 
     func delete(_ id: UUID) {
         students.removeAll { $0.id == id }
+    }
+
+    // MARK: Chord charts
+
+    func addChart() -> UUID {
+        let chart = ChordChart(title: "Chord Chart \(charts.count + 1)")
+        charts.append(chart)
+        return chart.id
+    }
+
+    func deleteChart(_ id: UUID) {
+        charts.removeAll { $0.id == id }
+    }
+
+    func chartBinding(for id: UUID) -> Binding<ChordChart>? {
+        guard charts.contains(where: { $0.id == id }) else { return nil }
+        return Binding(
+            get: { self.charts.first(where: { $0.id == id }) ?? ChordChart() },
+            set: { newValue in
+                if let i = self.charts.firstIndex(where: { $0.id == id }) {
+                    self.charts[i] = newValue
+                }
+            }
+        )
     }
 
     func binding(for id: UUID) -> Binding<Student>? {

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 enum SidebarItem: Hashable {
     case week
     case student(UUID)
+    case chart(UUID)
 }
 
 struct ContentView: View {
@@ -14,6 +15,7 @@ struct ContentView: View {
     @State private var search = ""
     @State private var newStudent: Student?
     @State private var pendingDelete: Student?
+    @State private var pendingChartDelete: ChordChart?
     @State private var confirmImport = false
     @State private var importing = false
     @State private var alertMessage: String?
@@ -44,6 +46,18 @@ struct ContentView: View {
         ) { student in
             Button("Delete Student and All Lessons", role: .destructive) {
                 deleteStudent(student.id)
+            }
+        } message: { _ in
+            Text("This can't be undone.")
+        }
+        .confirmationDialog(
+            "Delete \(pendingChartDelete?.title ?? "chart")?",
+            isPresented: Binding(get: { pendingChartDelete != nil }, set: { if !$0 { pendingChartDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingChartDelete
+        ) { chart in
+            Button("Delete Chart", role: .destructive) {
+                deleteChart(chart.id)
             }
         } message: { _ in
             Text("This can't be undone.")
@@ -88,6 +102,26 @@ struct ContentView: View {
         List(selection: $selection) {
             NavigationLink(value: SidebarItem.week) {
                 Label("This Week", systemImage: "calendar")
+            }
+
+            Section("Chord Charts") {
+                ForEach(store.charts) { chart in
+                    NavigationLink(value: SidebarItem.chart(chart.id)) {
+                        Label(chart.title.isEmpty ? "Chord Chart" : chart.title, systemImage: "square.grid.3x3")
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            pendingChartDelete = chart
+                        } label: {
+                            Label("Delete Chart", systemImage: "trash")
+                        }
+                    }
+                }
+                Button {
+                    selection = .chart(store.addChart())
+                } label: {
+                    Label("New Chord Chart", systemImage: "plus")
+                }
             }
 
             Section("Students") {
@@ -137,6 +171,13 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .chart(let id)?:
+            if let binding = store.chartBinding(for: id) {
+                ChartPage(chart: binding, onDelete: { deleteChart(id) })
+                    .id(id)
+            } else {
+                ContentUnavailableView("Pick a chart", systemImage: "square.grid.3x3")
+            }
         case .student(let id)?:
             if let binding = store.binding(for: id) {
                 StudentPage(student: binding, onDelete: { deleteStudent(id) })
@@ -149,6 +190,11 @@ struct ContentView: View {
                 newStudent = Student(colorIndex: store.students.count)
             })
         }
+    }
+
+    private func deleteChart(_ id: UUID) {
+        if selection == .chart(id) { selection = .week }
+        store.deleteChart(id)
     }
 
     private func deleteStudent(_ id: UUID) {
