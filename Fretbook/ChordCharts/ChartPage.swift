@@ -14,6 +14,7 @@ struct ChartPage: View {
     @State private var editing: DiagramTarget?
     @State private var preview: PDFFile?
     @State private var confirmDelete = false
+    @State private var showingPositions = false
 
     var body: some View {
         ScrollView {
@@ -62,6 +63,11 @@ struct ChartPage: View {
         .sheet(item: $preview) { file in
             PDFPreviewSheet(file: file)
         }
+        .sheet(isPresented: $showingPositions) {
+            ScalePositionsSheet(woodFretboard: chart.woodFretboard) { diagrams, title, subtitle in
+                addPositions(diagrams, title: title, subtitle: subtitle)
+            }
+        }
         .confirmationDialog("Delete this chart?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete Chart", role: .destructive, action: onDelete)
         }
@@ -98,6 +104,7 @@ struct ChartPage: View {
                 Toggle("Tuning under strings", isOn: $chart.showTuning)
                 Toggle("Note names in dots", isOn: $chart.showNoteNames)
                 Toggle("Left-handed", isOn: $chart.leftHanded)
+                Toggle("Wood fretboard", isOn: $chart.woodFretboard)
             }
             .toggleStyle(.button)
             .font(.subheadline)
@@ -168,9 +175,10 @@ struct ChartPage: View {
             leftHanded: chart.leftHanded,
             showTuning: chart.showTuning,
             showNoteNames: chart.showNoteNames,
+            woodFretboard: chart.woodFretboard,
             nameSize: chart.columns >= 4 ? 15 : 20
         )
-        .frame(maxWidth: chart.columns == 1 ? 320 : .infinity)
+        .frame(maxWidth: chart.columns == 1 && diagram.kind == .box ? 320 : .infinity)
         .frame(maxWidth: .infinity)
         .padding(6)
         .contentShape(Rectangle())
@@ -235,6 +243,11 @@ struct ChartPage: View {
                 Label("Blank Diagram", systemImage: "square.dashed")
             }
             Button {
+                showingPositions = true
+            } label: {
+                Label("5 Scale Positions…", systemImage: "rectangle.split.1x2")
+            }
+            Button {
                 addScale()
             } label: {
                 Label("Scale on Fretboard", systemImage: "pianokeys")
@@ -270,7 +283,7 @@ struct ChartPage: View {
             HStack {
                 Button("Blank Diagram") { addBlank() }
                     .buttonStyle(.bordered)
-                Button("Scale on Fretboard") { addScale() }
+                Button("5 Scale Positions") { showingPositions = true }
                     .buttonStyle(.bordered)
                 Button("Add Open Chords") { addOpenChords() }
                     .buttonStyle(.borderedProminent)
@@ -302,6 +315,18 @@ struct ChartPage: View {
             diagram.fill(scale: pentatonic, root: 9, labels: .intervals)
         }
         editing = DiagramTarget(diagram: diagram, isNew: true)
+    }
+
+    private func addPositions(_ diagrams: [FretDiagram], title: String, subtitle: String) {
+        withAnimation {
+            if chart.diagrams.isEmpty {
+                chart.title = title
+                chart.subtitle = subtitle
+                chart.showTuning = false
+                chart.layout = ChartLayout(columns: 1, rows: 5)
+            }
+            chart.diagrams.append(contentsOf: diagrams)
+        }
     }
 
     private func addOpenChords() {

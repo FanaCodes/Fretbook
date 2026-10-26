@@ -57,6 +57,7 @@ struct ChartPrintPage: View {
                                         leftHanded: chart.leftHanded,
                                         showTuning: chart.showTuning,
                                         showNoteNames: chart.showNoteNames,
+                                        woodFretboard: chart.woodFretboard,
                                         nameSize: nameSize
                                     )
                                 } else {

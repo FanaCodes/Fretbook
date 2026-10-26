@@ -16,6 +16,7 @@ struct DiagramEditor: View {
     let leftHanded: Bool
     let showTuning: Bool
     let showNoteNames: Bool
+    let woodFretboard: Bool
     let onSave: (FretDiagram) -> Void
 
     init(diagram: FretDiagram, isNew: Bool, chart: ChordChart, onSave: @escaping (FretDiagram) -> Void) {
@@ -25,6 +26,7 @@ struct DiagramEditor: View {
         self.leftHanded = chart.leftHanded
         self.showTuning = chart.showTuning
         self.showNoteNames = chart.showNoteNames
+        self.woodFretboard = chart.woodFretboard
         self.onSave = onSave
     }
 
@@ -99,7 +101,9 @@ struct DiagramEditor: View {
                     leftHanded: leftHanded,
                     showTuning: true,
                     showNoteNames: showNoteNames,
-                    selection: selection
+                    selection: selection,
+                    woodFretboard: woodFretboard,
+                    reserveOpenColumn: true
                 )
                 .contentShape(Rectangle())
                 .gesture(

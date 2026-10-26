@@ -67,10 +67,14 @@ struct NeckGeometry {
     let frets: Int
     let leftHanded: Bool
     let showTuning: Bool
+    var openColumn = true
 
     var showsNut: Bool { startFret == 1 }
-    private var labelUnits: CGFloat { showTuning ? 0.7 : 0.15 }
-    private var openUnits: CGFloat { showsNut ? 0.9 : 0.35 }
+    private var labelUnits: CGFloat { showTuning ? 0.7 : 0.1 }
+    private var openUnits: CGFloat {
+        if !showsNut { return 0.35 }
+        return openColumn ? 0.9 : 0.15
+    }
 
     var fretGap: CGFloat { size.width / (labelUnits + openUnits + CGFloat(frets) + 0.25) }
     var stringGap: CGFloat { size.height / (CGFloat(max(strings - 1, 1)) + 1.6) }
@@ -104,7 +108,7 @@ struct NeckGeometry {
         guard row >= 0, row < strings, abs(point.y - (gridMinY + CGFloat(row) * stringGap)) <= stringGap * 0.6 else { return nil }
         let string = strings - 1 - row
         if x < gridMinX {
-            if showsNut && x > gridMinX - openUnits * fretGap {
+            if showsNut && openColumn && x > gridMinX - openUnits * fretGap {
                 return (string, 0)
             }
             return nil
@@ -122,6 +126,8 @@ struct FretDiagramView: View {
     var showTuning = true
     var showNoteNames = false
     var selection: UUID? = nil
+    var woodFretboard = false
+    var reserveOpenColumn = false
 
     var body: some View {
         Canvas { context, size in
@@ -135,12 +141,17 @@ struct FretDiagramView: View {
 
     static func aspectRatio(for diagram: FretDiagram) -> CGFloat {
         if diagram.kind == .neck {
-            return (CGFloat(diagram.fretCount) + 1.8) / (CGFloat(max(diagram.stringCount - 1, 1)) * 0.62 + 1.0)
+            return (CGFloat(diagram.fretCount) + 1.6) / (CGFloat(max(diagram.stringCount - 1, 1)) * 0.52 + 0.95)
         }
         return CGFloat(max(diagram.stringCount, 2)) / (CGFloat(diagram.fretCount) + 1.4)
     }
 
-    private var ink: GraphicsContext.Shading { .color(.primary) }
+    /// Black on the wood-coloured board (in light and dark mode), otherwise the normal text colour.
+    private var usesWood: Bool { woodFretboard && diagram.kind == .neck }
+    private var inkColor: Color { usesWood ? .black : .primary }
+    private var paperColor: Color { usesWood ? .white : Color(uiColor: .systemBackground) }
+    private var ink: GraphicsContext.Shading { .color(inkColor) }
+    static let wood = Color(red: 1.0, green: 0.95, blue: 0.62)
     private var highlight: GraphicsContext.Shading { .color(.accentColor) }
 
     // MARK: Chord box
@@ -240,12 +251,18 @@ struct FretDiagramView: View {
             startFret: diagram.startFret,
             frets: diagram.fretCount,
             leftHanded: leftHanded,
-            showTuning: showTuning
+            showTuning: showTuning,
+            openColumn: needsOpenColumn
         )
         let r = geo.dotRadius
         let lastFret = diagram.startFret + diagram.fretCount - 1
         let left = min(geo.lineX(0), geo.lineX(diagram.fretCount))
         let right = max(geo.lineX(0), geo.lineX(diagram.fretCount))
+
+        if usesWood {
+            let board = CGRect(x: left, y: geo.gridMinY, width: right - left, height: geo.gridMaxY - geo.gridMinY)
+            context.fill(Path(board), with: .color(Self.wood))
+        }
 
         // Position markers (inlays) between the middle strings
         let inlayRadius = r * 0.32
@@ -283,7 +300,7 @@ struct FretDiagramView: View {
 
         // Fret numbers underneath
         let numberSize = max(6, min(geo.fretGap * 0.32, geo.stringGap * 0.42))
-        for fret in diagram.startFret...lastFret where fret == diagram.startFret || [3, 5, 7, 9, 12, 15, 17, 19, 21, 24].contains(fret) {
+        for fret in diagram.startFret...lastFret where (fret == diagram.startFret && fret > 1) || [3, 5, 7, 9, 12, 15, 17, 19, 21, 24].contains(fret) {
             let label = Text("\(fret)")
                 .font(.system(size: numberSize, weight: .semibold))
                 .foregroundColor(.secondary)
@@ -335,18 +352,32 @@ struct FretDiagramView: View {
         }
     }
 
+    /// The fretboard only reserves space left of the nut when open strings are used.
+    var needsOpenColumn: Bool {
+        reserveOpenColumn || diagram.dots.contains { $0.fret == 0 } || diagram.marks.contains { $0 != .none }
+    }
+
     // MARK: Shared pieces
 
     private func drawDot(_ dot: Dot, at center: CGPoint, radius r: CGFloat, lineWidth: CGFloat, in context: inout GraphicsContext) {
         let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+        let hollow = dot.style == .ghost || (dot.style == .root && diagram.kind == .neck)
         switch dot.style {
         case .normal:
             context.fill(Path(ellipseIn: rect), with: ink)
+        case .root where diagram.kind == .neck:
+            // Roots on the fretboard: white ring, like printed scale charts.
+            context.fill(Path(ellipseIn: rect), with: .color(paperColor))
+            context.stroke(Path(ellipseIn: rect.insetBy(dx: lineWidth * 0.9, dy: lineWidth * 0.9)), with: ink, lineWidth: lineWidth * 1.8)
         case .root:
             context.fill(Path(roundedRect: rect, cornerRadius: r * 0.35), with: ink)
         case .ghost:
-            context.fill(Path(ellipseIn: rect), with: .color(Color(uiColor: .systemBackground)))
-            context.stroke(Path(ellipseIn: rect.insetBy(dx: lineWidth, dy: lineWidth)), with: ink, lineWidth: lineWidth * 1.6)
+            context.fill(Path(ellipseIn: rect), with: .color(paperColor))
+            context.stroke(
+                Path(ellipseIn: rect.insetBy(dx: lineWidth, dy: lineWidth)),
+                with: ink,
+                style: StrokeStyle(lineWidth: lineWidth * 1.4, dash: [r * 0.3, r * 0.22])
+            )
         }
         if dot.id == selection {
             context.stroke(Path(ellipseIn: rect.insetBy(dx: -r * 0.35, dy: -r * 0.35)), with: highlight, lineWidth: lineWidth * 2.5)
@@ -357,7 +388,7 @@ struct FretDiagramView: View {
             text = diagram.noteName(string: dot.string, fret: dot.fret)
         }
         if !text.isEmpty {
-            drawLabel(text, at: center, radius: r, color: dot.style == .ghost ? .primary : .white, in: &context)
+            drawLabel(text, at: center, radius: r, color: hollow ? inkColor : .white, in: &context)
         }
     }
 
@@ -395,19 +426,22 @@ struct DiagramCard: View {
     var leftHanded = false
     var showTuning = true
     var showNoteNames = false
+    var woodFretboard = false
     var nameSize: CGFloat = 18
 
     var body: some View {
-        VStack(spacing: nameSize * 0.25) {
+        let isNeck = diagram.kind == .neck
+        VStack(alignment: isNeck ? .leading : .center, spacing: nameSize * 0.25) {
             Text(diagram.name.isEmpty ? " " : diagram.name)
-                .font(.system(size: nameSize, weight: .bold))
+                .font(.system(size: isNeck ? nameSize * 0.8 : nameSize, weight: isNeck ? .semibold : .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
             FretDiagramView(
                 diagram: diagram,
                 leftHanded: leftHanded,
                 showTuning: showTuning,
-                showNoteNames: showNoteNames
+                showNoteNames: showNoteNames,
+                woodFretboard: woodFretboard
             )
             .aspectRatio(FretDiagramView.aspectRatio(for: diagram), contentMode: .fit)
             if !diagram.caption.isEmpty {

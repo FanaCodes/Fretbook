@@ -348,6 +348,7 @@ struct ChordChart: Identifiable, Codable, Hashable {
     var showTuning = true
     var showNoteNames = false
     var leftHanded = false
+    var woodFretboard = true
     var diagrams: [FretDiagram] = []
     var created = Date()
 
@@ -373,7 +374,7 @@ struct ChordChart: Identifiable, Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, subtitle, columns, rows, paper, showTuning, showNoteNames, leftHanded, diagrams, created
+        case id, title, subtitle, columns, rows, paper, showTuning, showNoteNames, leftHanded, woodFretboard, diagrams, created
     }
 
     init(from decoder: Decoder) throws {
@@ -387,6 +388,7 @@ struct ChordChart: Identifiable, Codable, Hashable {
         showTuning = try c.decodeIfPresent(Bool.self, forKey: .showTuning) ?? true
         showNoteNames = try c.decodeIfPresent(Bool.self, forKey: .showNoteNames) ?? false
         leftHanded = try c.decodeIfPresent(Bool.self, forKey: .leftHanded) ?? false
+        woodFretboard = try c.decodeIfPresent(Bool.self, forKey: .woodFretboard) ?? true
         diagrams = try c.decodeIfPresent([FretDiagram].self, forKey: .diagrams) ?? []
         created = try c.decodeIfPresent(Date.self, forKey: .created) ?? Date()
     }
@@ -567,7 +569,7 @@ enum Scales {
 }
 
 enum ScaleLabels: String, CaseIterable, Identifiable {
-    case intervals, notes, none
+    case fingers, intervals, notes, none
 
     var id: String { rawValue }
 
@@ -576,6 +578,7 @@ enum ScaleLabels: String, CaseIterable, Identifiable {
         case .intervals: return "Intervals"
         case .notes: return "Notes"
         case .none: return "Dots only"
+        case .fingers: return "Fingers"
         }
     }
 }
@@ -586,10 +589,12 @@ extension FretDiagram {
         (startFret == 1 ? 0 : startFret)...(startFret + fretCount - 1)
     }
 
-    /// Replaces the diagram's dots with every note of a scale/arpeggio in the visible window.
-    mutating func fill(scale: ScaleType, root: Int, labels: ScaleLabels) {
+    /// Replaces the diagram's dots with every note of a scale/arpeggio in `range`
+    /// (default: the visible window).
+    mutating func fill(scale: ScaleType, root: Int, labels: ScaleLabels, range: ClosedRange<Int>? = nil) {
         let relativeMajor = scale.isMinor ? (root + 3) % 12 : root
         preferFlats = [1, 3, 5, 8, 10].contains(relativeMajor)
+        let frets = range ?? visibleFrets
 
         var steps: [Int: String] = [:]
         for step in scale.steps { steps[step.semitones] = step.label }
@@ -599,11 +604,17 @@ extension FretDiagram {
         marks = Array(repeating: .none, count: stringCount)
         for string in 0..<stringCount {
             guard let open = NoteMath.pitchClass(tuning[string]) else { continue }
-            for fret in visibleFrets {
+            let matches = frets.filter { steps[((open + $0 - root) % 12 + 12) % 12] != nil }
+            // One finger per fret. In a 5-fret window the index finger stretches back only
+            // on strings that have a note on the first fret.
+            let stretch = frets.count > 4 && !matches.contains(frets.lowerBound)
+            let fingerBase = stretch ? frets.lowerBound + 1 : frets.lowerBound
+            for fret in matches {
                 let interval = ((open + fret - root) % 12 + 12) % 12
                 guard let label = steps[interval] else { continue }
                 let text: String
                 switch labels {
+                case .fingers: text = fret == 0 ? "0" : "\(min(4, max(1, fret - fingerBase + 1)))"
                 case .intervals: text = label
                 case .notes: text = NoteMath.name(open + fret, flats: preferFlats)
                 case .none: text = ""
@@ -612,6 +623,44 @@ extension FretDiagram {
             }
         }
         name = "\(NoteMath.name(root, flats: preferFlats)) \(scale.name)"
+    }
+
+    /// The five classic scale positions, each drawn on a full fretboard.
+    /// Windows are measured from the (relative) major root on the lowest string,
+    /// e.g. G major → frets 2–5, 4–8, 7–10, 9–13, 12–15.
+    static func scalePositions(scale: ScaleType, root: Int, labels: ScaleLabels,
+                               tuning: [String] = Tunings.standard, neckLength: Int = 15) -> [FretDiagram] {
+        guard let lowest = NoteMath.pitchClass(tuning.first ?? "E") else { return [] }
+        let reference = scale.isMinor ? (root + 3) % 12 : root
+        let rootFret = ((reference - lowest) % 12 + 12) % 12
+        let windows = [(-1, 2), (1, 5), (4, 7), (6, 10), (9, 12)]
+
+        let ranges = windows.map { window -> ClosedRange<Int> in
+            var low = rootFret + window.0
+            var high = rootFret + window.1
+            if low < 1 {
+                low += 12
+                high += 12
+            }
+            if high > neckLength && low - 12 >= 1 {
+                low -= 12
+                high -= 12
+            }
+            return low...high
+        }
+        .sorted { $0.lowerBound < $1.lowerBound }
+
+        let length = max(neckLength, ranges.map(\.upperBound).max() ?? neckLength)
+        return ranges.enumerated().map { index, range in
+            var diagram = FretDiagram()
+            diagram.setTuning(tuning)
+            diagram.kind = .neck
+            diagram.startFret = 1
+            diagram.fretCount = length
+            diagram.fill(scale: scale, root: root, labels: labels, range: range)
+            diagram.name = "Position \(index + 1)"
+            return diagram
+        }
     }
 
     /// Converts a lesson chord note ("Am", "x02210") into a chart diagram,
