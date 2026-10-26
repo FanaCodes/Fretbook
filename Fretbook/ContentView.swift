@@ -5,6 +5,7 @@ enum SidebarItem: Hashable {
     case week
     case student(UUID)
     case chart(UUID)
+    case song(UUID)
 }
 
 struct ContentView: View {
@@ -104,6 +105,37 @@ struct ContentView: View {
                 Label("This Week", systemImage: "calendar")
             }
 
+            Section("Song Sheets") {
+                ForEach(store.songs) { song in
+                    NavigationLink(value: SidebarItem.song(song.id)) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(song.title.isEmpty ? "Untitled" : song.title)
+                                if !song.artist.isEmpty {
+                                    Text(song.artist)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        } icon: {
+                            Image(systemName: "music.note.list")
+                        }
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            deleteSong(song.id)
+                        } label: {
+                            Label("Delete Song Sheet", systemImage: "trash")
+                        }
+                    }
+                }
+                Button {
+                    selection = .song(store.addSong())
+                } label: {
+                    Label("New Song Sheet", systemImage: "plus")
+                }
+            }
+
             Section("Chord Charts") {
                 ForEach(store.charts) { chart in
                     NavigationLink(value: SidebarItem.chart(chart.id)) {
@@ -171,6 +203,13 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .song(let id)?:
+            if let binding = store.songBinding(for: id) {
+                SongSheetPage(song: binding, onDelete: { deleteSong(id) })
+                    .id(id)
+            } else {
+                ContentUnavailableView("Pick a song", systemImage: "music.note.list")
+            }
         case .chart(let id)?:
             if let binding = store.chartBinding(for: id) {
                 ChartPage(chart: binding, onDelete: { deleteChart(id) })
@@ -190,6 +229,11 @@ struct ContentView: View {
                 newStudent = Student(colorIndex: store.students.count)
             })
         }
+    }
+
+    private func deleteSong(_ id: UUID) {
+        if selection == .song(id) { selection = .week }
+        store.deleteSong(id)
     }
 
     private func deleteChart(_ id: UUID) {

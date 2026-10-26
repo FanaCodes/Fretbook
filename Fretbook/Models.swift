@@ -261,22 +261,25 @@ enum TimeFormat {
 }
 
 struct Library: Codable {
-    var version = 2
+    var version = 3
     var students: [Student]
     var charts: [ChordChart]
+    var songs: [SongSheet] = []
 
-    init(students: [Student], charts: [ChordChart]) {
+    init(students: [Student], charts: [ChordChart], songs: [SongSheet] = []) {
         self.students = students
         self.charts = charts
+        self.songs = songs
     }
 
-    enum CodingKeys: String, CodingKey { case version, students, charts }
+    enum CodingKeys: String, CodingKey { case version, students, charts, songs }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
         students = try c.decode([Student].self, forKey: .students)
         charts = try c.decodeIfPresent([ChordChart].self, forKey: .charts) ?? []
+        songs = try c.decodeIfPresent([SongSheet].self, forKey: .songs) ?? []
     }
 }
 
