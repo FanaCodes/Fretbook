@@ -96,7 +96,7 @@ enum ScoreLayout {
         return width
     }
 
-    private static func space(for note: MelodyNote, s: CGFloat, lyricSize: CGFloat) -> CGFloat {
+    private static func space(for note: MelodyNote, lyric: String, s: CGFloat, lyricSize: CGFloat) -> CGFloat {
         let base: CGFloat
         switch note.value {
         case .whole: base = 5.2
@@ -107,8 +107,8 @@ enum ScoreLayout {
         }
         var width = base * s * (note.dotted ? 1.2 : 1)
         if note.accidental != .none && !note.isRest { width += s * 1.1 }
-        if !note.lyric.isEmpty {
-            width = max(width, CGFloat(note.lyric.count) * lyricSize * 0.58 + s * 1.0)
+        if !lyric.isEmpty {
+            width = max(width, CGFloat(lyric.count + 1) * lyricSize * 0.58 + s * 1.0)
         }
         if !note.chord.isEmpty {
             width = max(width, CGFloat(note.chord.count) * s * 0.95 + s * 0.6)
@@ -120,6 +120,7 @@ enum ScoreLayout {
     static func layout(melody: Melody, width: CGFloat, s: CGFloat) -> [ScoreSystem] {
         let metrics = ScoreMetrics(melody: melody, s: s)
         let capacity = max(melody.barQuarters, 0.25)
+        let lyrics = melody.lyricAssignment.map
 
         // 1. Bars
         struct Bar {
@@ -133,7 +134,7 @@ enum ScoreLayout {
         for (index, note) in melody.notes.enumerated() {
             current.indices.append(index)
             current.starts.append(position)
-            current.widths.append(space(for: note, s: s, lyricSize: metrics.lyricSize))
+            current.widths.append(space(for: note, lyric: lyrics[note.id]?.text ?? "", s: s, lyricSize: metrics.lyricSize))
             position += note.quarters
             if position >= capacity - 0.0001 {
                 bars.append(current)

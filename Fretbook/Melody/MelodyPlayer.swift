@@ -27,37 +27,52 @@ final class MelodyPlayer: ObservableObject {
         }
     }
 
-    /// Plays one note briefly, e.g. when it's entered.
-    func preview(_ note: MelodyNote, keySignature: Int) {
-        guard !note.isRest, !isPlaying, startEngine() else { return }
-        let midi = UInt8(clamping: note.midi(keySignature: keySignature))
-        sampler.startNote(midi, withVelocity: 80, onChannel: 0)
+    /// Plays one pitch briefly, e.g. when a note is entered or dragged.
+    func preview(midi: Int) {
+        guard !isPlaying, startEngine() else { return }
+        let note = UInt8(clamping: midi)
+        sampler.startNote(note, withVelocity: 80, onChannel: 0)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.sampler.stopNote(midi, onChannel: 0)
+            self?.sampler.stopNote(note, onChannel: 0)
         }
     }
 
     func play(_ melody: Melody, from startIndex: Int = 0) {
         stop()
         guard startEngine(), !melody.notes.isEmpty else { return }
-        let notes = Array(melody.notes.dropFirst(min(startIndex, melody.notes.count)))
         let secondsPerQuarter = 60.0 / Double(max(20, melody.tempo))
-        let key = melody.keySignature
+        let pitches = melody.pitches
+        let notes = melody.notes
+
+        // Tied notes sound as one long note.
+        var events: [(id: UUID, midi: Int?, seconds: Double)] = []
+        var index = min(max(0, startIndex), notes.count)
+        while index < notes.count {
+            let note = notes[index]
+            var quarters = note.quarters
+            var last = index
+            while !notes[last].isRest && notes[last].tie && last + 1 < notes.count && !notes[last + 1].isRest {
+                last += 1
+                quarters += notes[last].quarters
+            }
+            events.append((note.id, note.isRest ? nil : pitches[note.id], quarters * secondsPerQuarter))
+            index = last + 1
+        }
         isPlaying = true
+        let schedule = events
 
         task = Task { @MainActor [weak self] in
-            for note in notes {
+            for event in schedule {
                 guard let self, !Task.isCancelled else { return }
-                self.playing = note.id
-                let length = note.quarters * secondsPerQuarter
-                if note.isRest {
-                    try? await Task.sleep(nanoseconds: UInt64(length * 1_000_000_000))
+                self.playing = event.id
+                if let midi = event.midi {
+                    let note = UInt8(clamping: midi)
+                    self.sampler.startNote(note, withVelocity: 90, onChannel: 0)
+                    try? await Task.sleep(nanoseconds: UInt64(event.seconds * 0.92 * 1_000_000_000))
+                    self.sampler.stopNote(note, onChannel: 0)
+                    try? await Task.sleep(nanoseconds: UInt64(event.seconds * 0.08 * 1_000_000_000))
                 } else {
-                    let midi = UInt8(clamping: note.midi(keySignature: key))
-                    self.sampler.startNote(midi, withVelocity: 90, onChannel: 0)
-                    try? await Task.sleep(nanoseconds: UInt64(length * 0.9 * 1_000_000_000))
-                    self.sampler.stopNote(midi, onChannel: 0)
-                    try? await Task.sleep(nanoseconds: UInt64(length * 0.1 * 1_000_000_000))
+                    try? await Task.sleep(nanoseconds: UInt64(event.seconds * 1_000_000_000))
                 }
             }
             self?.playing = nil

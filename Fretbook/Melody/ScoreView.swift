@@ -6,6 +6,7 @@ struct ScoreSystemView: View {
     let system: ScoreSystem
     let metrics: ScoreMetrics
     let tab: [UUID: (string: Int, fret: Int)]
+    var lyrics: [UUID: Syllable] = [:]
     var selected: UUID? = nil
     var playing: UUID? = nil
 
@@ -94,15 +95,109 @@ struct ScoreSystemView: View {
                 let label = Text(note.chord).font(.system(size: s * 1.4, weight: .bold)).foregroundColor(color(for: note))
                 context.draw(label, at: CGPoint(x: placed.x - s * 0.6, y: metrics.chordY), anchor: .leading)
             }
-            if !note.lyric.isEmpty {
-                let label = Text(note.lyric).font(.system(size: metrics.lyricSize)).foregroundColor(color(for: note))
-                context.draw(label, at: CGPoint(x: placed.x, y: metrics.lyricY))
-            }
         }
 
         for group in groups {
             drawBeams(&context, group: group, info: beamInfo)
         }
+        if metrics.showStaff {
+            drawTies(&context, beamInfo: beamInfo)
+            drawTriplets(&context, beamInfo: beamInfo)
+        }
+        drawLyrics(&context)
+    }
+
+    // MARK: Lyrics, ties, triplets
+
+    private func drawLyrics(_ context: inout GraphicsContext) {
+        guard metrics.hasLyrics else { return }
+        let notes = system.notes
+        for (k, placed) in notes.enumerated() {
+            let note = melody.notes[placed.index]
+            if let syllable = lyrics[note.id] {
+                let label = Text(syllable.text).font(.system(size: metrics.lyricSize)).foregroundColor(color(for: note))
+                context.draw(label, at: CGPoint(x: placed.x, y: metrics.lyricY))
+
+                // Hyphen to the next sung syllable on this line
+                if syllable.continues {
+                    let next = notes[(k + 1)...].first { lyrics[melody.notes[$0.index].id] != nil }
+                    let hyphenX = next.map { (placed.x + $0.x) / 2 } ?? placed.x + CGFloat(syllable.text.count) * metrics.lyricSize * 0.4 + s
+                    let hyphen = Text("-").font(.system(size: metrics.lyricSize)).foregroundColor(.secondary)
+                    context.draw(hyphen, at: CGPoint(x: hyphenX, y: metrics.lyricY))
+                }
+            } else if !note.isRest && (note.holdsSyllable || (k > 0 && melody.notes[notes[k - 1].index].tie)) {
+                // Extender line under notes that keep singing the syllable
+                let fromX = k > 0 ? notes[k - 1].x + s * 0.8 : placed.x - s * 2
+                var line = Path()
+                line.move(to: CGPoint(x: fromX, y: metrics.lyricY + metrics.lyricSize * 0.45))
+                line.addLine(to: CGPoint(x: placed.x + s * 0.6, y: metrics.lyricY + metrics.lyricSize * 0.45))
+                context.stroke(line, with: .color(.secondary), lineWidth: lineWidth)
+            }
+        }
+    }
+
+    private func drawTies(_ context: inout GraphicsContext, beamInfo: [Int: (up: Bool, end: CGFloat)]) {
+        for (k, placed) in system.notes.enumerated() {
+            let note = melody.notes[placed.index]
+            guard note.tie, !note.isRest else { continue }
+            let y = metrics.y(step: note.step)
+            let up = beamInfo[placed.index]?.up ?? (note.step < 6)
+            // Curve on the side away from the stem
+            let direction: CGFloat = up ? 1 : -1
+            let startX = placed.x + s * 0.5
+            let endX: CGFloat
+            if k + 1 < system.notes.count {
+                endX = system.notes[k + 1].x - s * 0.5
+            } else {
+                endX = system.width - s * 0.5
+            }
+            let baseY = y + direction * s * 0.6
+            var curve = Path()
+            curve.move(to: CGPoint(x: startX, y: baseY))
+            curve.addQuadCurve(to: CGPoint(x: endX, y: baseY), control: CGPoint(x: (startX + endX) / 2, y: baseY + direction * s * 1.1))
+            curve.addQuadCurve(to: CGPoint(x: startX, y: baseY), control: CGPoint(x: (startX + endX) / 2, y: baseY + direction * s * 0.8))
+            context.fill(curve, with: .color(color(for: note)))
+        }
+    }
+
+    private func drawTriplets(_ context: inout GraphicsContext, beamInfo: [Int: (up: Bool, end: CGFloat)]) {
+        var run: [PlacedNote] = []
+        func flush() {
+            defer { run = [] }
+            guard let first = run.first, let last = run.last else { return }
+            let steps = run.map { melody.notes[$0.index].step }
+            let highest = metrics.y(step: steps.max() ?? 6)
+            let y = min(metrics.staffTop - s * 0.8, highest - s * 4.2)
+            let x1 = first.x - s * 0.4
+            let x2 = last.x + s * 0.9
+            var bracket = Path()
+            bracket.move(to: CGPoint(x: x1, y: y + s * 0.5))
+            bracket.addLine(to: CGPoint(x: x1, y: y))
+            bracket.addLine(to: CGPoint(x: (x1 + x2) / 2 - s * 0.6, y: y))
+            bracket.move(to: CGPoint(x: (x1 + x2) / 2 + s * 0.6, y: y))
+            bracket.addLine(to: CGPoint(x: x2, y: y))
+            bracket.addLine(to: CGPoint(x: x2, y: y + s * 0.5))
+            context.stroke(bracket, with: ink, lineWidth: lineWidth)
+            let three = Text("3").font(.system(size: s * 1.3, weight: .bold).italic()).foregroundColor(.primary)
+            context.draw(three, at: CGPoint(x: (x1 + x2) / 2, y: y))
+        }
+        var total = 0.0
+        for placed in system.notes {
+            let note = melody.notes[placed.index]
+            if note.triplet {
+                run.append(placed)
+                total += note.value.quarters
+                // A triplet is complete when three notes' worth of the written value is filled.
+                if total >= (run.first.map { melody.notes[$0.index].value.quarters * 3 } ?? 0) - 0.0001 {
+                    flush()
+                    total = 0
+                }
+            } else {
+                flush()
+                total = 0
+            }
+        }
+        flush()
     }
 
     private func drawBarlines(_ context: inout GraphicsContext, left: CGFloat) {
@@ -328,7 +423,7 @@ struct ScoreSystemView: View {
     }
 }
 
-/// All lines of a melody stacked, with the header above.
+/// All lines of a melody stacked. Tap to add/select notes; long-press a note and drag to change its pitch.
 struct ScoreView: View {
     let melody: Melody
     let width: CGFloat
@@ -336,20 +431,45 @@ struct ScoreView: View {
     var selected: UUID? = nil
     var playing: UUID? = nil
     var onTap: ((ScoreSystem, CGPoint) -> Void)? = nil
+    /// (system, start point, current point, finished)
+    var onDrag: ((ScoreSystem, CGPoint, CGPoint, Bool) -> Void)? = nil
 
     var body: some View {
         let systems = ScoreLayout.layout(melody: melody, width: width, s: s)
         let metrics = ScoreMetrics(melody: melody, s: s)
         let tab = MusicTheory.tabPositions(for: melody)
+        let lyrics = melody.lyricAssignment.map
 
         VStack(alignment: .leading, spacing: s * 0.8) {
             ForEach(systems) { system in
-                ScoreSystemView(melody: melody, system: system, metrics: metrics, tab: tab, selected: selected, playing: playing)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        SpatialTapGesture()
-                            .onEnded { value in onTap?(system, value.location) }
-                    )
+                ScoreSystemView(
+                    melody: melody,
+                    system: system,
+                    metrics: metrics,
+                    tab: tab,
+                    lyrics: lyrics,
+                    selected: selected,
+                    playing: playing
+                )
+                .contentShape(Rectangle())
+                .gesture(
+                    SpatialTapGesture()
+                        .onEnded { value in onTap?(system, value.location) }
+                )
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.25)
+                        .sequenced(before: DragGesture(minimumDistance: 0))
+                        .onChanged { value in
+                            if case .second(true, let drag?) = value {
+                                onDrag?(system, drag.startLocation, drag.location, false)
+                            }
+                        }
+                        .onEnded { value in
+                            if case .second(true, let drag?) = value {
+                                onDrag?(system, drag.startLocation, drag.location, true)
+                            }
+                        }
+                )
             }
         }
     }

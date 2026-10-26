@@ -1,98 +1,33 @@
 import SwiftUI
 
-/// Small drawn note symbol for the duration buttons.
-struct NoteValueIcon: View {
-    let value: NoteValue
-    var isRest = false
-
-    var body: some View {
-        Canvas { context, size in
-            let s = size.height / 5.2
-            let x = size.width / 2 - s * 0.3
-            let y = size.height - s * 1.1
-            let ink = GraphicsContext.Shading.foreground
-            if isRest {
-                let label = Text(restSymbol).font(.system(size: size.height * 0.36, weight: .bold))
-                context.draw(label, at: CGPoint(x: size.width / 2, y: size.height / 2))
-                return
-            }
-            let oval = Path(ellipseIn: CGRect(x: -s * 0.62, y: -s * 0.42, width: s * 1.24, height: s * 0.84))
-                .applying(CGAffineTransform(rotationAngle: -0.35).concatenating(CGAffineTransform(translationX: x, y: y)))
-            if value.isFilled {
-                context.fill(oval, with: ink)
-            } else {
-                context.stroke(oval, with: ink, lineWidth: s * 0.2)
-            }
-            guard value.hasStem else { return }
-            let stemX = x + s * 0.56
-            var stem = Path()
-            stem.move(to: CGPoint(x: stemX, y: y))
-            stem.addLine(to: CGPoint(x: stemX, y: y - s * 3.4))
-            context.stroke(stem, with: ink, lineWidth: s * 0.16)
-            for flag in 0..<value.flags {
-                let top = y - s * 3.4 + CGFloat(flag) * s * 0.8
-                var path = Path()
-                path.move(to: CGPoint(x: stemX, y: top))
-                path.addQuadCurve(to: CGPoint(x: stemX + s * 0.8, y: top + s * 1.8), control: CGPoint(x: stemX + s * 0.9, y: top + s * 0.6))
-                context.stroke(path, with: ink, lineWidth: s * 0.22)
-            }
-        }
-    }
-
-    private var restSymbol: String {
-        switch value {
-        case .whole: return "R1"
-        case .half: return "R½"
-        case .quarter: return "R¼"
-        case .eighth: return "R⅛"
-        case .sixteenth: return "R16"
-        }
-    }
+private struct NoteDrag {
+    let id: UUID
+    let startStep: Int
 }
 
-struct MelodyHeader: View {
-    let melody: Melody
-    var scale: CGFloat = 1
-
-    var body: some View {
-        VStack(spacing: 3 * scale) {
-            Text(melody.title.isEmpty ? "Untitled" : melody.title)
-                .font(.system(size: 22 * scale, weight: .bold))
-            if !melody.subtitle.isEmpty {
-                Text(melody.subtitle)
-                    .font(.system(size: 12 * scale))
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("♩ = \(melody.tempo)")
-                    .font(.system(size: 11 * scale, weight: .semibold))
-                Spacer()
-                if melody.display.showsTab && melody.tuning != Tunings.standard {
-                    Text("Tuning: \(Tunings.name(for: melody.tuning))")
-                        .font(.system(size: 10 * scale))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-/// A simple melody writer: tap the staff to add notes, add lyrics and chords, see tab, play it back.
+/// Melody writer: type the lyrics, then give each syllable its note with the piano,
+/// the fretboard or by tapping the staff.
 struct MelodyPage: View {
     @Binding var melody: Melody
     var onDelete: () -> Void
 
     @StateObject private var player = MelodyPlayer()
+    @AppStorage("melodyZoom") private var zoom = 10.0
+    @AppStorage("melodyInputPanel") private var panel: InputPanel = .piano
+
     @State private var selectedID: UUID?
     @State private var inputValue: NoteValue = .quarter
     @State private var inputDotted = false
-    @State private var restMode = false
+    @State private var inputTriplet = false
+    @State private var keyboardOctave = 4
+    @State private var undoStack: [Melody] = []
+    @State private var redoStack: [Melody] = []
+    @State private var clipboard: [MelodyNote] = []
+    @State private var drag: NoteDrag?
     @State private var preview: PDFFile?
     @State private var confirmDelete = false
-    @FocusState private var lyricFocused: Bool
 
-    private let s: CGFloat = 9
+    private var s: CGFloat { CGFloat(zoom) }
 
     private var selectedIndex: Int? {
         guard let selectedID else { return nil }
@@ -101,10 +36,11 @@ struct MelodyPage: View {
 
     var body: some View {
         GeometryReader { geo in
-            let paperWidth = max(300, min(geo.size.width - 48, 900) - 48)
+            let paperWidth = max(300, min(geo.size.width - 48, 1000) - 48)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     settingsCard
+                    lyricsCard
                     scoreCard(width: paperWidth)
                 }
                 .padding(24)
@@ -115,42 +51,55 @@ struct MelodyPage: View {
         .safeAreaInset(edge: .bottom) { palette }
         .navigationTitle(melody.title.isEmpty ? "Melody" : melody.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    if player.isPlaying {
-                        player.stop()
-                    } else {
-                        player.play(melody, from: selectedIndex ?? 0)
-                    }
-                } label: {
-                    Label(player.isPlaying ? "Stop" : "Play", systemImage: player.isPlaying ? "stop.fill" : "play.fill")
-                }
-                .disabled(melody.notes.isEmpty)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    selectedID = nil
-                    preview = MelodyPDF.make(melody).map(PDFFile.init)
-                } label: {
-                    Label("Print / PDF", systemImage: "printer")
-                }
-                .disabled(melody.notes.isEmpty)
-            }
-            ToolbarItem(placement: .secondaryAction) {
-                Button(role: .destructive) {
-                    confirmDelete = true
-                } label: {
-                    Label("Delete Melody", systemImage: "trash")
-                }
-            }
-        }
+        .toolbar { toolbar }
+        .onAppear(perform: migrateNoteLyrics)
         .onDisappear { player.stop() }
         .sheet(item: $preview) { file in
             PDFPreviewSheet(file: file)
         }
         .confirmationDialog("Delete this melody?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete Melody", role: .destructive, action: onDelete)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                undo()
+            } label: {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(undoStack.isEmpty)
+            Button {
+                redo()
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+            .disabled(redoStack.isEmpty)
+            Button {
+                if player.isPlaying {
+                    player.stop()
+                } else {
+                    player.play(melody, from: selectedIndex ?? 0)
+                }
+            } label: {
+                Label(player.isPlaying ? "Stop" : "Play", systemImage: player.isPlaying ? "stop.fill" : "play.fill")
+            }
+            .disabled(melody.notes.isEmpty)
+            Button {
+                preview = MelodyPDF.make(melody).map(PDFFile.init)
+            } label: {
+                Label("Print / PDF", systemImage: "printer")
+            }
+            .disabled(melody.notes.isEmpty)
+        }
+        ToolbarItem(placement: .secondaryAction) {
+            Button(role: .destructive) {
+                confirmDelete = true
+            } label: {
+                Label("Delete Melody", systemImage: "trash")
+            }
         }
     }
 
@@ -162,8 +111,10 @@ struct MelodyPage: View {
             set: { value in
                 let parts = value.split(separator: "/").compactMap { Int($0) }
                 if parts.count == 2 {
-                    melody.beatsPerBar = parts[0]
-                    melody.beatUnit = parts[1]
+                    commit {
+                        $0.beatsPerBar = parts[0]
+                        $0.beatUnit = parts[1]
+                    }
                 }
             }
         )
@@ -205,20 +156,110 @@ struct MelodyPage: View {
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 280)
             }
-            if melody.display.showsTab {
-                Menu {
-                    ForEach(Tunings.presets.filter { $0.notes.count == 6 }) { preset in
-                        Button("\(preset.name) – \(preset.notes.joined(separator: " "))") {
-                            melody.tuning = preset.notes
+            HStack(spacing: 12) {
+                Image(systemName: "minus.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                Slider(value: $zoom, in: 7...16, step: 0.5)
+                    .frame(maxWidth: 220)
+                Image(systemName: "plus.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if melody.display.showsTab {
+                    Menu {
+                        ForEach(Tunings.presets.filter { $0.notes.count == 6 }) { preset in
+                            Button("\(preset.name) – \(preset.notes.joined(separator: " "))") {
+                                commit { $0.tuning = preset.notes }
+                            }
                         }
+                    } label: {
+                        Label("Tab tuning: \(Tunings.name(for: melody.tuning))", systemImage: "tuningfork")
+                            .font(.subheadline)
                     }
-                } label: {
-                    Label("Tab tuning: \(Tunings.name(for: melody.tuning))", systemImage: "tuningfork")
-                        .font(.subheadline)
                 }
             }
         }
         .card()
+    }
+
+    // MARK: Lyrics
+
+    private var lyricsCard: some View {
+        let assignment = melody.lyricAssignment
+        let syllables = melody.syllables
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Lyrics", systemImage: "text.quote")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    commit { $0.lyrics = MusicTheory.hyphenate($0.lyrics) }
+                } label: {
+                    Label("Split into syllables", systemImage: "scissors")
+                }
+                .buttonStyle(.bordered)
+                .disabled(melody.lyrics.isEmpty)
+            }
+
+            TextEditor(text: $melody.lyrics)
+                .font(.body)
+                .autocorrectionDisabled()
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 70, maxHeight: 130)
+                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+
+            if syllables.isEmpty {
+                Text("Type or paste the lyrics, split syllables with hyphens (hap-py birth-day). Every note you enter then sings the next syllable. Use **Hold** for one syllable over several notes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                WrapLayout(spacing: 4, lineSpacing: 4) {
+                    ForEach(Array(syllables.enumerated()), id: \.offset) { entry in
+                        let used = entry.offset < assignment.used
+                        let isNext = entry.offset == assignment.used
+                        Text(entry.element.text + (entry.element.continues ? " -" : ""))
+                            .font(.subheadline.weight(isNext ? .bold : .regular))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .foregroundStyle(isNext ? Color.white : (used ? Color.accentColor : Color.secondary))
+                            .background(
+                                isNext ? Color.accentColor : (used ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.1)),
+                                in: Capsule()
+                            )
+                            .onTapGesture { selectSyllable(entry.offset) }
+                    }
+                }
+                Text(assignment.used < assignment.total
+                     ? "Next note sings “\(syllables[assignment.used].text)” · \(assignment.total - assignment.used) syllables left"
+                     : "All syllables have notes.")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .card()
+    }
+
+    private func selectSyllable(_ index: Int) {
+        let assignment = melody.lyricAssignment.map
+        var count = 0
+        for note in melody.notes where assignment[note.id] != nil {
+            if count == index {
+                selectedID = note.id
+                return
+            }
+            count += 1
+        }
+        // Not sung yet: select the last note so the next entry gets this syllable.
+        selectedID = melody.notes.last?.id
+    }
+
+    /// Older melodies stored a lyric per note; move them into the lyrics text once.
+    private func migrateNoteLyrics() {
+        guard melody.lyrics.isEmpty, melody.notes.contains(where: { !$0.lyric.isEmpty }) else { return }
+        let words = melody.notes.compactMap { $0.lyric.isEmpty ? nil : $0.lyric }
+        melody.lyrics = words.joined(separator: " ")
+        for index in melody.notes.indices { melody.notes[index].lyric = "" }
     }
 
     // MARK: Score
@@ -232,10 +273,11 @@ struct MelodyPage: View {
                 s: s,
                 selected: selectedID,
                 playing: player.playing,
-                onTap: { system, point in handleTap(system: system, point: point) }
+                onTap: { system, point in handleTap(system: system, point: point) },
+                onDrag: { system, start, location, ended in handleDrag(system: system, start: start, location: location, ended: ended) }
             )
             if melody.notes.isEmpty {
-                Text("Pick a note length below, then tap the staff where the note should go. Tap a note to select it; use the arrows to change its pitch and the fields below to add lyrics or chords.")
+                Text("Choose a note length below and play the notes on the piano or fretboard. They're added one after another, each with the next syllable. Long-press a note and drag up or down to change its pitch.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -246,19 +288,19 @@ struct MelodyPage: View {
     }
 
     private func handleTap(system: ScoreSystem, point: CGPoint) {
+        guard drag == nil else { return }
         let metrics = ScoreMetrics(melody: melody, s: s)
 
-        // Tap on (or right next to) a note selects it.
         if let nearest = system.notes.min(by: { abs($0.x - point.x) < abs($1.x - point.x) }),
            abs(nearest.x - point.x) < s * 1.1 {
-            selectedID = melody.notes[nearest.index].id
-            if metrics.hasLyrics && abs(point.y - metrics.lyricY) < s * 1.3 {
-                lyricFocused = true
-            }
+            selectNote(melody.notes[nearest.index].id)
+            return
+        }
+        guard panel == .staff else {
+            selectedID = nil
             return
         }
 
-        // Otherwise add a new note where the user tapped.
         let insertAt: Int
         if let before = system.notes.last(where: { $0.x < point.x }) {
             insertAt = before.index + 1
@@ -266,38 +308,256 @@ struct MelodyPage: View {
             insertAt = min(system.firstNoteIndex, melody.notes.count)
         }
 
-        var note = MelodyNote(step: 4, value: inputValue, isRest: restMode)
-        note.dotted = inputDotted
-
         let stringCount = melody.tuning.count
         let tabTop = metrics.tabY(string: stringCount - 1, strings: stringCount)
-        let onTab = metrics.showTab && point.y > tabTop - metrics.tabSpacing && (!metrics.showStaff || point.y > metrics.staffBottom + s * 2.5)
+        let onTab = metrics.showTab && point.y > tabTop - metrics.tabSpacing
+            && (!metrics.showStaff || point.y > metrics.staffBottom + s * 2.5)
         if onTab {
-            // Tab: nearest string, open string pitch (set the fret afterwards)
             let row = Int(((point.y - tabTop) / metrics.tabSpacing).rounded())
             let string = min(stringCount - 1, max(0, stringCount - 1 - row))
-            setPitch(of: &note, string: string, fret: 0)
-        } else if metrics.showStaff {
-            note.step = min(18, max(-6, metrics.step(atY: point.y)))
-        } else if let previous = melody.notes.last {
-            note.step = previous.step
+            let open = MusicTheory.openStrings(melody.tuning)
+            insertPitch(open[string] + 12, string: string, at: insertAt)
+        } else {
+            var note = newNote()
+            note.step = min(18, max(-6, metrics.showStaff ? metrics.step(atY: point.y) : (melody.notes.last?.step ?? 6)))
+            insert(note, at: insertAt)
         }
-
-        melody.notes.insert(note, at: insertAt)
-        selectedID = note.id
-        player.preview(note, keySignature: melody.keySignature)
     }
 
-    private func setPitch(of note: inout MelodyNote, string: Int, fret: Int) {
-        let open = MusicTheory.openStrings(melody.tuning)
-        guard open.indices.contains(string) else { return }
-        let spelled = MusicTheory.spell(midi: open[string] + fret + 12, keySignature: melody.keySignature)
-        note.step = spelled.step
-        note.accidental = spelled.accidental
-        note.string = string
+    private func handleDrag(system: ScoreSystem, start: CGPoint, location: CGPoint, ended: Bool) {
+        if drag == nil {
+            guard let nearest = system.notes.min(by: { abs($0.x - start.x) < abs($1.x - start.x) }),
+                  abs(nearest.x - start.x) < s * 1.4 else { return }
+            let note = melody.notes[nearest.index]
+            guard !note.isRest else { return }
+            pushUndo()
+            drag = NoteDrag(id: note.id, startStep: note.step)
+            selectedID = note.id
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        guard let current = drag, let index = melody.notes.firstIndex(where: { $0.id == current.id }) else {
+            if ended { drag = nil }
+            return
+        }
+        let delta = Int(((start.y - location.y) / (s / 2)).rounded())
+        let step = min(18, max(-6, current.startStep + delta))
+        if melody.notes[index].step != step {
+            melody.notes[index].step = step
+            melody.notes[index].accidental = .none
+            melody.notes[index].string = nil
+            UISelectionFeedbackGenerator().selectionChanged()
+            if let midi = melody.pitches[current.id] { player.preview(midi: midi) }
+        }
+        if ended {
+            DispatchQueue.main.async { drag = nil }
+        }
     }
 
     // MARK: Palette
+
+    private var selectedSummary: String {
+        guard let index = selectedIndex else { return "Nothing selected – new notes go at the end" }
+        let note = melody.notes[index]
+        var parts: [String] = []
+        if note.isRest {
+            parts.append("\(note.value.label) rest")
+        } else {
+            if let midi = melody.pitches[note.id] {
+                parts.append(MusicTheory.noteName(midi: midi, keySignature: melody.keySignature))
+            }
+            parts.append(note.value.label.lowercased() + (note.dotted ? " dotted" : "") + (note.triplet ? " triplet" : ""))
+            if let syllable = melody.lyricAssignment.map[note.id] {
+                parts.append("“\(syllable.text)”")
+            } else if note.holdsSyllable {
+                parts.append("holds syllable")
+            }
+        }
+        parts.append("bar \(melody.barNumbers[index] + 1)")
+        return parts.joined(separator: " · ")
+    }
+
+    private var palette: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(NoteValue.allCases) { value in
+                        Button {
+                            setValue(value)
+                        } label: {
+                            NoteValueIcon(value: value)
+                                .frame(width: 26, height: 30)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(inputValue == value ? .accentColor : .secondary)
+                        .accessibilityLabel(value.label)
+                    }
+                    textButton("•", help: "Dotted", isOn: inputDotted) { toggleDot() }
+                    textButton("3", help: "Triplet", isOn: inputTriplet) { toggleTriplet() }
+                    textButton("Rest", help: "Add a rest") { addRest() }
+
+                    Divider().frame(height: 30)
+
+                    ForEach([Accidental.sharp, .flat, .natural], id: \.self) { accidental in
+                        textButton(accidental.symbol, help: "Accidental",
+                                   isOn: selectedIndex.map { melody.notes[$0].accidental == accidental } ?? false) {
+                            toggleAccidental(accidental)
+                        }
+                        .disabled(selectedIndex == nil)
+                    }
+                    textButton("⁀", help: "Tie to next note", isOn: selectedIndex.map { melody.notes[$0].tie } ?? false) {
+                        toggleFlag(\.tie)
+                    }
+                    .disabled(selectedIndex == nil)
+                    textButton("Hold", help: "Keep singing the previous syllable",
+                               isOn: selectedIndex.map { melody.notes[$0].holdsSyllable } ?? false) {
+                        toggleFlag(\.holdsSyllable)
+                    }
+                    .disabled(selectedIndex == nil)
+
+                    Divider().frame(height: 30)
+
+                    iconButton("arrow.up") { movePitch(1) }
+                    iconButton("arrow.down") { movePitch(-1) }
+                    iconButton("chevron.left") { moveSelection(-1) }
+                    iconButton("chevron.right") { moveSelection(1) }
+                    iconButton("delete.left") { deleteSelected() }
+                        .tint(.red)
+
+                    Menu {
+                        Button("Copy Note") { copyNote() }
+                            .disabled(selectedIndex == nil)
+                        Button("Copy Bar") { copyBar() }
+                            .disabled(selectedIndex == nil)
+                        Button("Paste \(clipboard.count) Note\(clipboard.count == 1 ? "" : "s")") { paste() }
+                            .disabled(clipboard.isEmpty)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .frame(width: 26, height: 30)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal, 16)
+            }
+            .disabled(player.isPlaying)
+
+            HStack(spacing: 12) {
+                Text(selectedSummary)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                if let index = selectedIndex, !melody.notes[index].isRest {
+                    TextField("Chord", text: noteBinding(\.chord, default: ""))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 90)
+                    if melody.display.showsTab {
+                        tabControls(index)
+                    }
+                }
+                Spacer()
+                Picker("Input", selection: $panel) {
+                    ForEach(InputPanel.allCases) { option in
+                        Label(option.label, systemImage: option.symbol).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 300)
+            }
+            .padding(.horizontal, 16)
+
+            inputPanel
+                .padding(.horizontal, 16)
+        }
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private var inputPanel: some View {
+        switch panel {
+        case .piano:
+            HStack(spacing: 8) {
+                VStack(spacing: 6) {
+                    iconButton("chevron.up", enabled: keyboardOctave < 6) { keyboardOctave += 1 }
+                    Text("Oct")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    iconButton("chevron.down", enabled: keyboardOctave > 3) { keyboardOctave -= 1 }
+                }
+                PianoKeyboard(
+                    lowestOctave: keyboardOctave,
+                    highlighted: selectedIndex.flatMap { melody.pitches[melody.notes[$0].id] }
+                ) { midi in
+                    insertPitch(midi)
+                }
+                .frame(height: 110)
+            }
+        case .fretboard:
+            FretboardPad(
+                tuning: melody.tuning,
+                highlighted: selectedIndex.flatMap { MusicTheory.tabPositions(for: melody)[melody.notes[$0].id] }
+            ) { string, fret in
+                let open = MusicTheory.openStrings(melody.tuning)
+                guard open.indices.contains(string) else { return }
+                insertPitch(open[string] + fret + 12, string: string)
+            }
+        case .staff:
+            Text("Tap the staff where a note should go (between notes inserts there). Tap a tab line to add a note on that string.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func tabControls(_ index: Int) -> some View {
+        let note = melody.notes[index]
+        let positions = MusicTheory.tabPositions(for: melody)
+        let position = positions[note.id]
+        let strings = melody.tuning.count
+
+        return HStack(spacing: 8) {
+            Menu {
+                Button("Automatic") { commit { $0.notes[index].string = nil } }
+                ForEach((0..<strings).reversed(), id: \.self) { string in
+                    Button("String \(strings - string) (\(melody.tuning[string]))") {
+                        commit { $0.notes[index].string = string }
+                    }
+                }
+            } label: {
+                Text(position.map { "String \(strings - $0.string)" } ?? "String")
+            }
+            Stepper(position.map { "Fret \($0.fret)" } ?? "Fret –", onIncrement: {
+                guard let position else { return }
+                setTab(index, string: position.string, fret: min(24, position.fret + 1))
+            }, onDecrement: {
+                guard let position else { return }
+                setTab(index, string: position.string, fret: max(0, position.fret - 1))
+            })
+            .fixedSize()
+        }
+        .font(.subheadline)
+    }
+
+    private func textButton(_ title: String, help: String, isOn: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.headline)
+                .frame(minWidth: 26, minHeight: 30)
+        }
+        .buttonStyle(.bordered)
+        .tint(isOn ? .accentColor : .secondary)
+        .accessibilityLabel(help)
+    }
+
+    private func iconButton(_ systemImage: String, enabled: Bool? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 26, height: 30)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!(enabled ?? (selectedIndex != nil)))
+    }
 
     private func noteBinding<T>(_ keyPath: WritableKeyPath<MelodyNote, T>, default value: T) -> Binding<T> {
         Binding(
@@ -308,205 +568,157 @@ struct MelodyPage: View {
         )
     }
 
-    private var palette: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 6) {
-                ForEach(NoteValue.allCases) { value in
-                    Button {
-                        inputValue = value
-                        if let index = selectedIndex { melody.notes[index].value = value }
-                    } label: {
-                        NoteValueIcon(value: value, isRest: restMode)
-                            .frame(width: 26, height: 30)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(inputValue == value ? .accentColor : .secondary)
-                    .accessibilityLabel(value.label)
-                }
+    // MARK: Editing (all changes go through `commit` so they can be undone)
 
-                toggleButton("Dot", systemImage: "circle.fill", isOn: inputDotted) {
-                    inputDotted.toggle()
-                    if let index = selectedIndex { melody.notes[index].dotted = inputDotted }
-                }
-                toggleButton("Rest", systemImage: "pause", isOn: restMode) {
-                    restMode.toggle()
-                    if let index = selectedIndex { melody.notes[index].isRest = restMode }
-                }
-
-                Divider().frame(height: 30)
-
-                ForEach([Accidental.sharp, .flat, .natural], id: \.self) { accidental in
-                    Button(accidental.symbol) {
-                        guard let index = selectedIndex else { return }
-                        melody.notes[index].accidental = melody.notes[index].accidental == accidental ? .none : accidental
-                        melody.notes[index].string = nil
-                        player.preview(melody.notes[index], keySignature: melody.keySignature)
-                    }
-                    .font(.title3)
-                    .buttonStyle(.bordered)
-                    .tint(selectedIndex.map { melody.notes[$0].accidental == accidental } == true ? .accentColor : .secondary)
-                    .disabled(selectedIndex == nil)
-                }
-
-                Divider().frame(height: 30)
-
-                iconButton("arrow.up") { movePitch(1) }
-                iconButton("arrow.down") { movePitch(-1) }
-                iconButton("chevron.left") { moveSelection(-1) }
-                iconButton("chevron.right") { moveSelection(1) }
-                iconButton("delete.left") { deleteSelected() }
-                    .tint(.red)
-            }
-            .disabled(player.isPlaying)
-
-            if let index = selectedIndex {
-                selectedNoteRow(index)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
+    private func pushUndo() {
+        undoStack.append(melody)
+        if undoStack.count > 200 { undoStack.removeFirst() }
+        redoStack.removeAll()
     }
 
-    private func selectedNoteRow(_ index: Int) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "text.quote")
-                .foregroundStyle(.secondary)
-            TextField("Lyric (syllable)", text: noteBinding(\.lyric, default: ""))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($lyricFocused)
-                .submitLabel(.next)
-                .onSubmit {
-                    moveSelection(1, skipRests: true)
-                    lyricFocused = true
-                }
-                .frame(maxWidth: 220)
-            Image(systemName: "music.note.list")
-                .foregroundStyle(.secondary)
-            TextField("Chord", text: noteBinding(\.chord, default: ""))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .frame(maxWidth: 100)
-
-            if melody.display.showsTab && !melody.notes[index].isRest {
-                tabControls(index)
-            }
-            Spacer()
-        }
-        .textFieldStyle(.roundedBorder)
+    private func commit(_ change: (inout Melody) -> Void) {
+        pushUndo()
+        var copy = melody
+        change(&copy)
+        melody = copy
     }
 
-    private func tabControls(_ index: Int) -> some View {
-        let note = melody.notes[index]
-        let position = MusicTheory.tabPositions(for: melody)[note.id]
-        let strings = melody.tuning.count
-
-        return HStack(spacing: 8) {
-            Menu {
-                Button("Automatic") { melody.notes[index].string = nil }
-                ForEach((0..<strings).reversed(), id: \.self) { string in
-                    Button("String \(strings - string) (\(melody.tuning[string]))") {
-                        if let fret = position.map({ MusicTheory.openStrings(melody.tuning)[$0.string] + $0.fret - MusicTheory.openStrings(melody.tuning)[string] }), fret >= 0 {
-                            melody.notes[index].string = string
-                        } else {
-                            setPitch(of: &melody.notes[index], string: string, fret: 0)
-                        }
-                    }
-                }
-            } label: {
-                Label(position.map { "String \(strings - $0.string)" } ?? "String", systemImage: "line.3.horizontal")
-            }
-            Stepper(position.map { "Fret \($0.fret)" } ?? "Fret –", onIncrement: {
-                guard let position else { return }
-                setPitch(of: &melody.notes[index], string: position.string, fret: min(24, position.fret + 1))
-                player.preview(melody.notes[index], keySignature: melody.keySignature)
-            }, onDecrement: {
-                guard let position else { return }
-                setPitch(of: &melody.notes[index], string: position.string, fret: max(0, position.fret - 1))
-                player.preview(melody.notes[index], keySignature: melody.keySignature)
-            })
-            .fixedSize()
-        }
+    private func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(melody)
+        melody = previous
+        if selectedIndex == nil { selectedID = melody.notes.last?.id }
     }
 
-    private func toggleButton(_ title: String, systemImage: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .labelStyle(.titleOnly)
-                .font(.subheadline.weight(.semibold))
-                .frame(minWidth: 34, minHeight: 30)
-        }
-        .buttonStyle(.bordered)
-        .tint(isOn ? .accentColor : .secondary)
+    private func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(melody)
+        melody = next
+        if selectedIndex == nil { selectedID = melody.notes.last?.id }
     }
 
-    private func iconButton(_ systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .frame(width: 26, height: 30)
-        }
-        .buttonStyle(.bordered)
-        .disabled(selectedIndex == nil)
+    private func newNote() -> MelodyNote {
+        var note = MelodyNote(step: 4, value: inputValue)
+        note.dotted = inputDotted
+        note.triplet = inputTriplet
+        return note
     }
 
-    // MARK: Editing
+    private func insert(_ note: MelodyNote, at index: Int? = nil) {
+        let position = min(index ?? selectedIndex.map { $0 + 1 } ?? melody.notes.count, melody.notes.count)
+        commit { $0.notes.insert(note, at: position) }
+        selectedID = note.id
+        if !note.isRest, let midi = melody.pitches[note.id] { player.preview(midi: midi) }
+    }
+
+    private func insertPitch(_ midi: Int, string: Int? = nil, at index: Int? = nil) {
+        let position = min(index ?? selectedIndex.map { $0 + 1 } ?? melody.notes.count, melody.notes.count)
+        let spelled = melody.spell(midi: midi, at: position)
+        var note = newNote()
+        note.step = min(18, max(-6, spelled.step))
+        note.accidental = spelled.accidental
+        note.string = string
+        insert(note, at: position)
+    }
+
+    private func addRest() {
+        var rest = newNote()
+        rest.isRest = true
+        insert(rest)
+    }
+
+    private func setValue(_ value: NoteValue) {
+        inputValue = value
+        if let index = selectedIndex { commit { $0.notes[index].value = value } }
+    }
+
+    private func toggleDot() {
+        inputDotted.toggle()
+        if let index = selectedIndex { commit { $0.notes[index].dotted = inputDotted } }
+    }
+
+    private func toggleTriplet() {
+        inputTriplet.toggle()
+        if let index = selectedIndex { commit { $0.notes[index].triplet = inputTriplet } }
+    }
+
+    private func toggleAccidental(_ accidental: Accidental) {
+        guard let index = selectedIndex else { return }
+        commit {
+            $0.notes[index].accidental = $0.notes[index].accidental == accidental ? .none : accidental
+            $0.notes[index].string = nil
+        }
+        if let midi = melody.pitches[melody.notes[index].id] { player.preview(midi: midi) }
+    }
+
+    private func toggleFlag(_ flag: WritableKeyPath<MelodyNote, Bool>) {
+        guard let index = selectedIndex else { return }
+        commit { $0.notes[index][keyPath: flag].toggle() }
+    }
+
+    private func setTab(_ index: Int, string: Int, fret: Int) {
+        let open = MusicTheory.openStrings(melody.tuning)
+        guard open.indices.contains(string) else { return }
+        let spelled = melody.spell(midi: open[string] + fret + 12, at: index)
+        commit {
+            $0.notes[index].step = spelled.step
+            $0.notes[index].accidental = spelled.accidental
+            $0.notes[index].string = string
+        }
+        if let midi = melody.pitches[melody.notes[index].id] { player.preview(midi: midi) }
+    }
 
     private func movePitch(_ delta: Int) {
         guard let index = selectedIndex, !melody.notes[index].isRest else { return }
-        melody.notes[index].step = min(18, max(-6, melody.notes[index].step + delta))
-        melody.notes[index].accidental = .none
-        melody.notes[index].string = nil
-        player.preview(melody.notes[index], keySignature: melody.keySignature)
+        commit {
+            $0.notes[index].step = min(18, max(-6, $0.notes[index].step + delta))
+            $0.notes[index].accidental = .none
+            $0.notes[index].string = nil
+        }
+        if let midi = melody.pitches[melody.notes[index].id] { player.preview(midi: midi) }
     }
 
-    private func moveSelection(_ delta: Int, skipRests: Bool = false) {
-        guard !melody.notes.isEmpty else { return }
-        var index = (selectedIndex ?? (delta > 0 ? -1 : melody.notes.count)) + delta
-        while skipRests && melody.notes.indices.contains(index) && melody.notes[index].isRest {
-            index += delta
-        }
-        guard melody.notes.indices.contains(index) else { return }
-        selectedID = melody.notes[index].id
-        let note = melody.notes[index]
+    private func selectNote(_ id: UUID) {
+        selectedID = id
+        guard let note = melody.notes.first(where: { $0.id == id }) else { return }
         inputValue = note.value
         inputDotted = note.dotted
-        restMode = note.isRest
+        inputTriplet = note.triplet
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard !melody.notes.isEmpty else { return }
+        let index = (selectedIndex ?? (delta > 0 ? -1 : melody.notes.count)) + delta
+        guard melody.notes.indices.contains(index) else { return }
+        selectNote(melody.notes[index].id)
     }
 
     private func deleteSelected() {
         guard let index = selectedIndex else { return }
-        melody.notes.remove(at: index)
-        if melody.notes.isEmpty {
-            selectedID = nil
-        } else {
-            selectedID = melody.notes[max(0, index - 1)].id
-        }
+        commit { $0.notes.remove(at: index) }
+        selectedID = melody.notes.isEmpty ? nil : melody.notes[max(0, index - 1)].id
     }
-}
 
-// MARK: - PDF
+    private func copyNote() {
+        guard let index = selectedIndex else { return }
+        clipboard = [melody.notes[index]]
+    }
 
-enum MelodyPDF {
-    @MainActor
-    static func make(_ melody: Melody) -> URL? {
-        let paper = PaperSize.regionalDefault
-        let width = paper.size.width - PDFPaginator.margin * 2
-        let s: CGFloat = 6.4
-        let metrics = ScoreMetrics(melody: melody, s: s)
-        let tab = MusicTheory.tabPositions(for: melody)
-        let systems = ScoreLayout.layout(melody: melody, width: width, s: s)
+    private func copyBar() {
+        guard let index = selectedIndex else { return }
+        let bars = melody.barNumbers
+        clipboard = melody.notes.enumerated().filter { bars[$0.offset] == bars[index] }.map(\.element)
+    }
 
-        var blocks: [AnyView] = [AnyView(MelodyHeader(melody: melody))]
-        for system in systems {
-            blocks.append(AnyView(ScoreSystemView(melody: melody, system: system, metrics: metrics, tab: tab)))
+    private func paste() {
+        guard !clipboard.isEmpty else { return }
+        let position = min(selectedIndex.map { $0 + 1 } ?? melody.notes.count, melody.notes.count)
+        let copies = clipboard.map { note -> MelodyNote in
+            var copy = note
+            copy.id = UUID()
+            return copy
         }
-        return PDFPaginator.make(
-            fileName: melody.title.isEmpty ? "Melody" : melody.title,
-            paper: paper,
-            footer: melody.title,
-            blocks: blocks
-        )
+        commit { $0.notes.insert(contentsOf: copies, at: position) }
+        selectedID = copies.last?.id
     }
 }
