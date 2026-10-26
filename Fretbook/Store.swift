@@ -15,6 +15,10 @@ final class Store: ObservableObject {
         didSet { scheduleSave() }
     }
 
+    @Published var melodies: [Melody] = [] {
+        didSet { scheduleSave() }
+    }
+
     /// Set when the data file exists but couldn't be read.
     @Published var loadError: String?
 
@@ -41,6 +45,7 @@ final class Store: ObservableObject {
             students = library.students
             charts = library.charts
             songs = library.songs
+            melodies = library.melodies
         } catch {
             // Never overwrite a file we couldn't read: keep a copy aside first.
             let copy = fileURL.deletingLastPathComponent()
@@ -64,7 +69,7 @@ final class Store: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(Library(students: students, charts: charts, songs: songs))
+            let data = try encoder.encode(Library(students: students, charts: charts, songs: songs, melodies: melodies))
             try data.write(to: fileURL, options: .atomic)
         } catch {
             print("Save failed: \(error)")
@@ -92,6 +97,7 @@ final class Store: ObservableObject {
         students = imported.students
         charts = imported.charts
         songs = imported.songs
+        melodies = imported.melodies
         save()
     }
 
@@ -133,6 +139,30 @@ final class Store: ObservableObject {
             set: { newValue in
                 if let i = self.charts.firstIndex(where: { $0.id == id }) {
                     self.charts[i] = newValue
+                }
+            }
+        )
+    }
+
+    // MARK: Melodies
+
+    func addMelody() -> UUID {
+        let melody = Melody(title: "New Melody")
+        melodies.append(melody)
+        return melody.id
+    }
+
+    func deleteMelody(_ id: UUID) {
+        melodies.removeAll { $0.id == id }
+    }
+
+    func melodyBinding(for id: UUID) -> Binding<Melody>? {
+        guard melodies.contains(where: { $0.id == id }) else { return nil }
+        return Binding(
+            get: { self.melodies.first(where: { $0.id == id }) ?? Melody() },
+            set: { newValue in
+                if let i = self.melodies.firstIndex(where: { $0.id == id }) {
+                    self.melodies[i] = newValue
                 }
             }
         )

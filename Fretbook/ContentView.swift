@@ -6,6 +6,7 @@ enum SidebarItem: Hashable {
     case student(UUID)
     case chart(UUID)
     case song(UUID)
+    case melody(UUID)
 }
 
 struct ContentView: View {
@@ -136,6 +137,26 @@ struct ContentView: View {
                 }
             }
 
+            Section("Melodies") {
+                ForEach(store.melodies) { melody in
+                    NavigationLink(value: SidebarItem.melody(melody.id)) {
+                        Label(melody.title.isEmpty ? "Untitled" : melody.title, systemImage: "music.quarternote.3")
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            deleteMelody(melody.id)
+                        } label: {
+                            Label("Delete Melody", systemImage: "trash")
+                        }
+                    }
+                }
+                Button {
+                    selection = .melody(store.addMelody())
+                } label: {
+                    Label("New Melody", systemImage: "plus")
+                }
+            }
+
             Section("Chord Charts") {
                 ForEach(store.charts) { chart in
                     NavigationLink(value: SidebarItem.chart(chart.id)) {
@@ -203,6 +224,13 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         switch selection {
+        case .melody(let id)?:
+            if let binding = store.melodyBinding(for: id) {
+                MelodyPage(melody: binding, onDelete: { deleteMelody(id) })
+                    .id(id)
+            } else {
+                ContentUnavailableView("Pick a melody", systemImage: "music.quarternote.3")
+            }
         case .song(let id)?:
             if let binding = store.songBinding(for: id) {
                 SongSheetPage(song: binding, onDelete: { deleteSong(id) })
@@ -229,6 +257,11 @@ struct ContentView: View {
                 newStudent = Student(colorIndex: store.students.count)
             })
         }
+    }
+
+    private func deleteMelody(_ id: UUID) {
+        if selection == .melody(id) { selection = .week }
+        store.deleteMelody(id)
     }
 
     private func deleteSong(_ id: UUID) {
